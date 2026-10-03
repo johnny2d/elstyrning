@@ -101,30 +101,36 @@ with tab1:
         col3.metric("Utetemperatur", f"{latest.get('temp', 0):.1f} °C")
         col4.metric("Senast uppdaterad", latest['time'].strftime('%H:%M'))
 
-        # --- PLOTLY GRAF MED PRIS OCH ELEMENTSTATUS ---
+       # --- PLOTLY GRAF MED PRIS OCH ELEMENTSTATUS ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # 1. Staplar för Elementstatus (Bakgrund/Höger axel)
-        bar_colors = df['status_num'].map({1: "rgba(46, 204, 113, 0.4)", 0: "rgba(231, 76, 60, 0.2)"})
+        # 1. Status som punkter/steg för att synas även vid glapp i datan
+        # Vi lägger till färgade punkter för varje loggad datapunkt
+        status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
+        
         fig.add_trace(
-            go.Bar(
+            go.Scatter(
                 x=df['time'],
                 y=df['status_num'],
                 name="Elementstatus",
-                marker_color=bar_colors,
+                mode="lines+markers",
+                line=dict(shape="hv", color="rgba(150, 150, 150, 0.5)", width=2),
+                marker=dict(size=10, color=status_colors, symbol="circle"),
                 hovertemplate="Tid: %{x|%H:%M}<br>Status: %{customdata}<extra></extra>",
                 customdata=df['status']
             ),
             secondary_y=True
         )
 
-        # 2. Linje för Elpris (Vänster axel)
+        # 2. Linje + Punkter för Elpris (Vänster axel)
         fig.add_trace(
             go.Scatter(
                 x=df['time'],
                 y=df['price'],
                 name="Elpris (öre/kWh)",
-                line=dict(color="#29b6f6", width=3),
+                mode="lines+markers",
+                line=dict(color="#29b6f6", width=2),
+                marker=dict(size=6, color="#29b6f6"),
                 hovertemplate="Tid: %{x|%H:%M}<br>Pris: %{y:.2f} öre/kWh<extra></extra>"
             ),
             secondary_y=False
@@ -135,7 +141,7 @@ with tab1:
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=10, r=10, t=30, b=10),
-            height=400
+            height=420
         )
 
         # Primär Y-axel (Elpris)
@@ -146,12 +152,11 @@ with tab1:
             title_text="Status",
             tickvals=[0, 1],
             ticktext=["AV 🔴", "PÅ 🟢"],
-            range=[-0.05, 1.15],
+            range=[-0.2, 1.2],
             secondary_y=True
         )
 
         st.plotly_chart(fig, use_container_width=True)
-
         # Visa tabell över historik
         with st.expander("Visa rådata / logg"):
             st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), use_container_width=True)
