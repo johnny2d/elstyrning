@@ -34,7 +34,7 @@ def load_gist_data():
     return {}, []
 
 def save_history(history_data):
-    # Behåll bara de senaste 200 datapunkterna (cirka 2 dygn) för att inte fylla Gisten
+    # Behåll bara de senaste 200 datapunkterna
     trimmed_history = history_data[-200:]
     payload = {
         "files": {
@@ -43,8 +43,25 @@ def save_history(history_data):
             }
         }
     }
-    requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers, json=payload)
+    
+    # --- DEBUG: Kontrollera variabler innan anrop ---
+    print(f"[DEBUG] GIST_ID: '{GIST_ID}'")
+    print(f"[DEBUG] Headers som skickas: {headers}")
+    
+    if not GIST_ID:
+        print("[ERROR] GIST_ID saknas eller är tom! Avbryter sparande.")
+        return
 
+    url = f"https://api.github.com/gists/{GIST_ID}"
+    response = requests.patch(url, headers=headers, json=payload)
+    
+    # --- DEBUG: Kontrollera svar från GitHub API ---
+    print(f"[DEBUG] GitHub API Statuskod: {response.status_code}")
+    
+    if response.status_code == 200:
+        print("Loggat till history.json i Gist!")
+    else:
+        print(f"[ERROR] Kunde inte spara till Gist. Svar från GitHub: {response.text}")
 # --- NORDPOOL API (KVARTSPRISER/SE3/SE2) ---
 def get_nordpool_prices():
     now = datetime.now()
