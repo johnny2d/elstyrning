@@ -6,7 +6,7 @@ import tinytuya
 
 # --- KONFIGURATION & MILJÖVARIABLER ---
 GIST_ID = os.getenv("GIST_ID")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") or os.getenv("GIST_TOKEN")
 TEMPERATUR_NU_STATION = os.getenv("TEMPERATUR_NU_STATION", "ostersund") # Byt till din närmsta station, t.ex. 'as' eller 'ostersund'
 
 # Tuya Cloud API
