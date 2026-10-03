@@ -26,6 +26,7 @@ jobs:
       - name: Kör styrskriptet
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
           TEMPERATUR_NU_STATION: "lugnvik" # Ändra till din t.nu station (t.ex. 'as' eller 'ostersund')
           TUYA_API_KEY: ${{ secrets.TUYA_API_KEY }}

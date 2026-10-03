@@ -63,34 +63,47 @@ def save_history(history_data):
     else:
         print(f"[ERROR] Kunde inte spara till Gist. Svar från GitHub: {response.text}")
 # --- NORDPOOL API (KVARTSPRISER/SE3/SE2) ---
-def get_nordpool_prices():
+import requests
+from datetime import datetime
+
+def get_nordpool_price(zone="SE3"):
+    """
+    Hämtar aktuellt elpris (i öre/kWh inkl. moms) för valt elområde.
+    Zoner: SE1, SE2, SE3, SE4
+    """
     now = datetime.now()
-    date_str = now.strftime("%Y/%m-%d")
-    # Vi hämtar för SE3 (ändra till SE2 om du bor längre norrut)
-    url = f"https://www.nordpoolgroup.com/api/marketdata/page/10?currency=SEK&endDate={now.strftime('%d-%m-%Y')}"
+    year = now.strftime("%Y")
+    month_day = now.strftime("%m-%d")
+    
+    # Öppet API för svenska elpriser (uppdaterat för kvarts/timpriser)
+    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_{zone}.json"
     
     try:
         res = requests.get(url, timeout=10)
+        print(f"[DEBUG] Elpris API HTTP Status: {res.status_code}")
+        
         if res.status_code == 200:
             data = res.json()
-            prices = []
-            # Förenklad parsing av Nordpools öppna API (öre/kWh inkl uppskattad moms)
-            for row in data.get("data", {}).get("Rows", []):
-                for col in row.get("Columns", []):
-                    if col.get("Name") in ["SE3", "SE2"]:
-                        val_str = col.get("Value", "").replace(",", ".").replace(" ", "")
-                        try:
-                            # Pris per MWh -> öre/kWh (multiplicera med 0.1 för SEK/MWh till öre/kWh)
-                            price_ore = float(val_str) * 0.1 * 1.25 # inkl moms
-                            prices.append(price_ore)
-                        except ValueError:
-                            pass
-            return prices
+            
+            # Sök upp det prisintervall som täcker den här sekunden/kvarten
+            for item in data:
+                # Parse start- och sluttid från ISO-format (t.ex. 2026-10-03T20:00:00+02:00)
+                time_start = datetime.fromisoformat(item["time_start"])
+                time_end = datetime.fromisoformat(item["time_end"])
+                
+                # Jämför med nuvarande tid (hanterar tidszoner automatiskt)
+                if time_start.timestamp() <= now.timestamp() < time_end.timestamp():
+                    # SEK_per_kWh * 100 = öre/kWh
+                    price_ore = item["SEK_per_kWh"] * 100
+                    print(f"[INFO] Hämtat elpris för {zone}: {price_ore:.2f} öre/kWh")
+                    return round(price_ore, 2)
+                    
+            print("[WARNING] Hittade inget matchande tidsintervall i dagsdatan.")
     except Exception as e:
-        print(f"Kunde inte hämta Nordpool-priser: {e}")
-    
-    # Backup-retur om API misslyckas
-    return [50.0] * 96
+        print(f"[ERROR] Fel vid hämtning av elpris: {e}")
+        
+    print("[WARNING] Använder reservpris 50.00 öre/kWh")
+    return 50.0
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
