@@ -165,7 +165,7 @@ def main():
     config, history = load_gist_data()
     
     current_temp = get_outside_temp()
-    prices = get_nordpool_price(zone="SE3")
+    prices = get_nordpool_price(zone="SE2")
     
     now = datetime.now()
     
