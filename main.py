@@ -77,20 +77,22 @@ def get_nordpool_prices():
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
-    # Använd 'lugnvik' direkt i URL:en för ren text
     station = os.getenv("TEMPERATUR_NU_STATION", "lugnvik")
     url = f"http://www.temperatur.nu/termo/{station}/temp.txt"
     
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
-            # Tvätta texten och konvertera till decimaltal
             temp_str = res.text.strip()
+            # Om temperatur.nu svarar med 'N/A' eller tom text
+            if temp_str.upper() == "N/A" or not temp_str:
+                print("Temperatur.nu returnerade N/A, använder 0.0 som reserv.")
+                return 0.0
             return float(temp_str)
     except Exception as e:
         print(f"Kunde inte hämta temperatur från temperatur.nu: {e}")
     
-    return 0.0 # Standardvärde om anropet misslyckas
+    return 0.0
 
 # --- TUYA CLOUD STYRNING ---
 def set_tuya_switch(state: bool):
