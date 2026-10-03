@@ -2,3 +2,4 @@ streamlit
 requests
 python-dateutil
 tinytuya
+plotly

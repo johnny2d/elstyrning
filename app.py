@@ -2,6 +2,8 @@ import streamlit as st
 import requests
 import json
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Elstyrning Control Panel", page_icon="⚡", layout="wide")
 
@@ -88,6 +90,9 @@ with tab1:
         # Konvertera tid till datetime för snyggare visualisering
         df['time'] = pd.to_datetime(df['timestamp'])
         
+        # Skapa en sifferkolumn för ON/OFF (1 = ON, 0 = OFF)
+        df['status_num'] = df['status'].apply(lambda x: 1 if x == 'ON' else 0)
+        
         # Visa nuvarande status
         latest = df.iloc[-1]
         col1, col2, col3, col4 = st.columns(4)
@@ -96,8 +101,56 @@ with tab1:
         col3.metric("Utetemperatur", f"{latest.get('temp', 0):.1f} °C")
         col4.metric("Senast uppdaterad", latest['time'].strftime('%H:%M'))
 
-        # Rita priskurvan
-        st.line_chart(df, x='time', y='price', color="#29b6f6")
+        # --- PLOTLY GRAF MED PRIS OCH ELEMENTSTATUS ---
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        # 1. Staplar för Elementstatus (Bakgrund/Höger axel)
+        bar_colors = df['status_num'].map({1: "rgba(46, 204, 113, 0.4)", 0: "rgba(231, 76, 60, 0.2)"})
+        fig.add_trace(
+            go.Bar(
+                x=df['time'],
+                y=df['status_num'],
+                name="Elementstatus",
+                marker_color=bar_colors,
+                hovertemplate="Tid: %{x|%H:%M}<br>Status: %{customdata}<extra></extra>",
+                customdata=df['status']
+            ),
+            secondary_y=True
+        )
+
+        # 2. Linje för Elpris (Vänster axel)
+        fig.add_trace(
+            go.Scatter(
+                x=df['time'],
+                y=df['price'],
+                name="Elpris (öre/kWh)",
+                line=dict(color="#29b6f6", width=3),
+                hovertemplate="Tid: %{x|%H:%M}<br>Pris: %{y:.2f} öre/kWh<extra></extra>"
+            ),
+            secondary_y=False
+        )
+
+        # Anpassa layout för graferna
+        fig.update_layout(
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=10, r=10, t=30, b=10),
+            height=400
+        )
+
+        # Primär Y-axel (Elpris)
+        fig.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
+        
+        # Sekundär Y-axel (ON/OFF)
+        fig.update_yaxes(
+            title_text="Status",
+            tickvals=[0, 1],
+            ticktext=["AV 🔴", "PÅ 🟢"],
+            range=[-0.05, 1.15],
+            secondary_y=True
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
 
         # Visa tabell över historik
         with st.expander("Visa rådata / logg"):
@@ -120,7 +173,7 @@ with tab2:
 
     st.divider()
 
-    st.subheader("2. Koldskydd & Utetemperatur")
+    st.subheader("2. Köldskydd & Utetemperatur")
     cold_temp_threshold = st.number_input(
         "Gräns för kyla (°C) – Aktivera lägsta körtid när det är kallare än",
         min_value=-30, max_value=10, value=config.get("cold_temp_threshold", 0)
