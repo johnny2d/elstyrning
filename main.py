@@ -66,44 +66,31 @@ def save_history(history_data):
 import requests
 from datetime import datetime
 
-def get_nordpool_prices(zone="SE3"):
+def get_nordpool_price(zone="SE3"):
     """
-    Hämtar aktuellt elpris (i öre/kWh inkl. moms) för valt elområde.
+    Hämtar samtliga elpriser för innevarande dygn i öre/kWh (inkl. moms) som en lista.
     Zoner: SE1, SE2, SE3, SE4
     """
     now = datetime.now()
     year = now.strftime("%Y")
     month_day = now.strftime("%m-%d")
     
-    # Öppet API för svenska elpriser (uppdaterat för kvarts/timpriser)
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_{zone}.json"
     
     try:
         res = requests.get(url, timeout=10)
-        print(f"[DEBUG] Elpris API HTTP Status: {res.status_code}")
-        
         if res.status_code == 200:
             data = res.json()
-            
-            # Sök upp det prisintervall som täcker den här sekunden/kvarten
-            for item in data:
-                # Parse start- och sluttid från ISO-format (t.ex. 2026-10-03T20:00:00+02:00)
-                time_start = datetime.fromisoformat(item["time_start"])
-                time_end = datetime.fromisoformat(item["time_end"])
-                
-                # Jämför med nuvarande tid (hanterar tidszoner automatiskt)
-                if time_start.timestamp() <= now.timestamp() < time_end.timestamp():
-                    # SEK_per_kWh * 100 = öre/kWh
-                    price_ore = item["SEK_per_kWh"] * 100
-                    print(f"[INFO] Hämtat elpris för {zone}: {price_ore:.2f} öre/kWh")
-                    return round(price_ore, 2)
-                    
-            print("[WARNING] Hittade inget matchande tidsintervall i dagsdatan.")
+            # Omvandla från SEK/kWh till öre/kWh (SEK_per_kWh * 100) för alla tidsintervall
+            prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+            if prices:
+                return prices
     except Exception as e:
-        print(f"[ERROR] Fel vid hämtning av elpris: {e}")
+        print(f"[ERROR] Fel vid hämtning av elpris-lista: {e}")
         
-    print("[WARNING] Använder reservpris 50.00 öre/kWh")
-    return 50.0
+    print("[WARNING] Använder reservpris-lista (50.00 öre/kWh)")
+    # Reservlista för ett helt dygn om anropet misslyckas (96 kvartar)
+    return [50.0] * 96
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
@@ -148,20 +135,51 @@ def set_tuya_switch(state: bool):
         print(f"Tuya svar: {res}")
     except Exception as e:
         print(f"Fel vid Tuya-styrning: {e}")
-
+def make_decision(prices, current_index, percentile_limit=50):
+    """
+    Bestämmer om värmen ska vara ON eller OFF.
+    percentile_limit=50 innebär att den bara är igång under de 50% billigaste kvartarna för dagen.
+    """
+    if not prices or current_index >= len(prices):
+        current_price = 50.0
+        is_on = True
+    else:
+        current_price = prices[current_index]
+        
+        # Sortera alla dygnets priser för att hitta gränsvärdet (tröskeln)
+        sorted_prices = sorted(prices)
+        cutoff_index = int(len(sorted_prices) * (percentile_limit / 100.0)) - 1
+        cutoff_index = max(0, cutoff_index)
+        threshold_price = sorted_prices[cutoff_index]
+        
+        # Slå på om det aktuella priset är lägre än eller lika med tröskeln
+        is_on = current_price <= threshold_price
+        
+        print(f"[LOG] Aktuellt pris: {current_price:.2f} öre/kWh")
+        print(f"[LOG] Tröskelvärde ({percentile_limit}% billigaste): {threshold_price:.2f} öre/kWh")
+        
+    return "ON" if is_on else "OFF", current_price
 # --- HOVUDLOGIK ---
 def main():
     print("Startar elstyrningskontroll...")
     config, history = load_gist_data()
     
     current_temp = get_outside_temp()
-    prices = get_nordpool_prices()
+    prices = get_nordpool_price(zone="SE3")
     
-    # Beräkna aktuellt kvartsindex (0-95 under dygnet)
     now = datetime.now()
-    quarter_index = (now.hour * 4) + (now.minute // 15)
     
-    current_price = prices[quarter_index] if quarter_index < len(prices) else prices[0]
+    # Dynamisk indexering beroende på om API returnerar 96 kvartar eller 24 timmar
+    if len(prices) == 24:
+        quarter_index = now.hour
+    else:
+        quarter_index = (now.hour * 4) + (now.minute // 15)
+    
+    # Säkerställ att index finns i listan (faller tillbaka på sista elementet eller pris 0 vid gränsfall)
+    if quarter_index < len(prices):
+        current_price = prices[quarter_index]
+    else:
+        current_price = prices[-1] if prices else 50.0
     
     # 1. Kolla Manuell överstyrning från GUI
     override = config.get("force_override", "AUTO")
@@ -189,12 +207,12 @@ def main():
         if current_price <= price_limit and current_price <= max_cap:
             should_be_on = True
             
-        # Regel B: Koldskydd – om det är kallt, se till att det går minst viss tid per timme
+        # Regel B: Köldskydd – om det är kallt, se till att det går minst viss tid per timme
         if current_temp <= cold_threshold and min_mins_cold > 0:
             mins_in_hour = now.minute
             if mins_in_hour < min_mins_cold:
                 should_be_on = True
-                print(f"Koldskydd aktiverat ({current_temp}°C <= {cold_threshold}°C): Tvingar körtid första {min_mins_cold} min i timmen.")
+                print(f"Köldskydd aktiverat ({current_temp}°C <= {cold_threshold}°C): Tvingar körtid första {min_mins_cold} min i timmen.")
 
     status_str = "ON" if should_be_on else "OFF"
     print(f"Pris: {current_price:.2f} öre/kWh | Temp: {current_temp}°C | Beslut: {status_str}")
