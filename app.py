@@ -27,7 +27,7 @@ if not check_password():
 
 # --- GIST-FUNKTIONER ---
 GIST_ID = st.secrets.get("GIST_ID")
-GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN")
+GITHUB_TOKEN = st.secrets.get("GIST_TOKEN")
 
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
