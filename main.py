@@ -66,7 +66,7 @@ def save_history(history_data):
 import requests
 from datetime import datetime
 
-def get_nordpool_price(zone="SE3"):
+def get_nordpool_prices(zone="SE3"):
     """
     Hämtar aktuellt elpris (i öre/kWh inkl. moms) för valt elområde.
     Zoner: SE1, SE2, SE3, SE4
