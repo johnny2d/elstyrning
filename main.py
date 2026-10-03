@@ -77,20 +77,24 @@ def get_nordpool_prices():
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
-    url = f"http://api.temperatur.nu/tnu_1.17.php?p={TEMPERATUR_NU_STATION}&cli=elstyrning_app"
+    # Använd 'lugnvik' direkt i URL:en för ren text
+    station = os.getenv("TEMPERATUR_NU_STATION", "lugnvik")
+    url = f"http://www.temperatur.nu/termo/{station}/temp.txt"
+    
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
-            data = res.json()
-            temp = float(data["stations"][0]["temp"])
-            return temp
+            # Tvätta texten och konvertera till decimaltal
+            temp_str = res.text.strip()
+            return float(temp_str)
     except Exception as e:
-        print(f"Kunde inte hämta temperatur: {e}")
-    return 0.0 # Standardvärde vid fel
+        print(f"Kunde inte hämta temperatur från temperatur.nu: {e}")
+    
+    return 0.0 # Standardvärde om anropet misslyckas
 
 # --- TUYA CLOUD STYRNING ---
 def set_tuya_switch(state: bool):
-    if not ALL([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
+    if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         print("Tuya API-nycklar saknas. Hoppar över fysisk styrning (testläge).")
         return
     
