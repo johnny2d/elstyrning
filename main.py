@@ -2,6 +2,7 @@ import os
 import json
 import requests
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import tinytuya
 
 # --- KONFIGURATION & MILJÖVARIABLER ---
@@ -74,7 +75,7 @@ def get_nordpool_price(zone="SE3"):
     # Använd svensk lokal tid i stället för GitHubs UTC-tid
     sweden_tz = ZoneInfo("Europe/Stockholm")
     now = datetime.now(sweden_tz)
-    
+
     year = now.strftime("%Y")
     month_day = now.strftime("%m-%d")
     
