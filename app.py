@@ -34,6 +34,8 @@ headers = {
     "Accept": "application/vnd.github.v3+json"
 }
 
+
+@st.cache_data(ttl=15)
 def load_gist_data():
     try:
         res = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers)
