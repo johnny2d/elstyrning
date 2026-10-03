@@ -1,0 +1,35 @@
+name: Elstyrning Scheduler
+
+on:
+  schedule:
+    # Körs var 15:e minut
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Gör att du även kan starta den manuellt från GitHub
+
+jobs:
+  run-controller:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ladda ned koden
+        uses: actions/checkout@v3
+
+      - name: Konfigurera Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Installera bibliotek
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Kör styrskriptet
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
+          TEMPERATUR_NU_STATION: "ostersund" # Ändra till din t.nu station (t.ex. 'as' eller 'ostersund')
+          TUYA_API_KEY: ${{ secrets.TUYA_API_KEY }}
+          TUYA_API_SECRET: ${{ secrets.TUYA_API_SECRET }}
+          TUYA_DEVICE_ID: ${{ secrets.TUYA_DEVICE_ID }}
+          TUYA_REGION: "eu"
+        run: python main.py
