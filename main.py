@@ -71,7 +71,10 @@ def get_nordpool_price(zone="SE3"):
     Hämtar samtliga elpriser för innevarande dygn i öre/kWh (inkl. moms) som en lista.
     Zoner: SE1, SE2, SE3, SE4
     """
-    now = datetime.now()
+    # Använd svensk lokal tid i stället för GitHubs UTC-tid
+    sweden_tz = ZoneInfo("Europe/Stockholm")
+    now = datetime.now(sweden_tz)
+    
     year = now.strftime("%Y")
     month_day = now.strftime("%m-%d")
     
@@ -167,7 +170,9 @@ def main():
     current_temp = get_outside_temp()
     prices = get_nordpool_price(zone="SE2")
     
-    now = datetime.now()
+  # Använd svensk lokal tid i stället för GitHubs UTC-tid
+    sweden_tz = ZoneInfo("Europe/Stockholm")
+    now = datetime.now(sweden_tz)
     
     # Dynamisk indexering beroende på om API returnerar 96 kvartar eller 24 timmar
     if len(prices) == 24:
