@@ -3,7 +3,7 @@ name: Elstyrning Scheduler
 on:
   schedule:
     # Körs var 15:e minut
-    - cron: '*/15 * * * *'
+  
   workflow_dispatch: # Gör att du även kan starta den manuellt från GitHub
 
 jobs:
