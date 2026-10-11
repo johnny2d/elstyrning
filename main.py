@@ -81,10 +81,14 @@ def get_nordpool_price(zone="SE2", target_date=None):
         target_date = datetime.now(sweden_tz)
 
     year = target_date.strftime("%Y")
+    # Använd strip för att ta bort eventuella ledande nollor om API:et är känsligt för det, 
+    # eller standard %m-%d vilket brukar vara MM-DD. 
+    # Standardformat för elprisetjustnu: YYYY/MM-DD_ZONE.json
     month = target_date.strftime("%m")
     day = target_date.strftime("%d")
     
-    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}/{day}_{zone}.json"
+    # Testa med bindestreck mellan år, månad och dag enligt deras exakta standard:
+    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
     print(f"[DEBUG] Försöker hämta URL: {url}")
     
     try:
