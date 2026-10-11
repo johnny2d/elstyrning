@@ -94,18 +94,16 @@ from datetime import datetime
 
 # --- NORDPOOL API (FÖR DAGEN ELLER MORGONDAGEN) ---
 def get_nordpool_price(zone="SE2", target_date=None):
-    """
-    Hämtar samtliga elpriser för ett givet datum i öre/kWh (inkl. moms) som en lista (96 kvartar).
-    Om target_date (datetime-objekt) inte anges används dagens datum.
-    """
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
         target_date = datetime.now(sweden_tz)
 
     year = target_date.strftime("%Y")
-    month_day = target_date.strftime("%m-%d")
+    month = target_date.strftime("%m")
+    day = target_date.strftime("%d")
     
-    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_{zone}.json"
+    # Rätt URL-format för elprisetjustnu.se: /YYYY/MM/DD_ZONE.json
+    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}/{day}_{zone}.json"
     
     try:
         res = requests.get(url, timeout=10)
