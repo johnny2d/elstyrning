@@ -235,8 +235,9 @@ with tab3:
     # Hjälpfunktion för att hämta priser direkt i Streamlit för visning
     def fetch_prices_for_date(target_date):
         year = target_date.strftime("%Y")
-        month_day = target_date.strftime("%m-%d")
-        url = f"https://api.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_SE2.json"
+        month = target_date.strftime("%m")
+        day = target_date.strftime("%d")
+        url = f"https://api.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_SE2.json"
         try:
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
