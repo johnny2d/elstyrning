@@ -4,4 +4,4 @@ python-dateutil
 tinytuya
 plotly
 pytest
-pulp
+pulp==2.8.0
