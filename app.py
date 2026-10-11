@@ -165,15 +165,20 @@ with tab1:
 
 # --- TAB 2: INSTÄLLNINGAR ---
 with tab2:
-    st.subheader("1. Prisbaserad styrning")
-    max_price_percent = st.slider(
-        "Andel billigaste timmar/kvartar per dygn (%)",
-        min_value=10, max_value=100, value=config.get("max_price_percent", 50), step=5
+    st.subheader("1. Optimeringsparametrar (PuLP)")
+    
+    # Minsta antal timmar på per dygn (omvandlas till 15-minutersblock internt, dvs * 4)
+    min_on_hours = st.slider(
+        "Minsta totala körtid per dygn (timmar)",
+        min_value=4, max_value=20, value=int(config.get("min_on_blocks", 32) / 4), step=1,
+        help="Hur många timmar per dygn som värmen absolut minst måste vara igång."
     )
-
-    max_price_cap = st.number_input(
-        "Absolut maxpris (öre/kWh) – Slå av om priset överstiger detta",
-        min_value=0, max_value=1000, value=config.get("max_price_cap", 250)
+    
+    # Max avstängning i rad (omvandlas till 15-minutersblock, dvs * 4)
+    max_off_hours = st.slider(
+        "Maximal avstängning i rad (timmar)",
+        min_value=1, max_value=6, value=int(config.get("max_off_blocks", 12) / 4), step=1,
+        help="För att undvika att huset blir för kallt: maximalt antal timmar värmen får vara avstängd i sträck."
     )
 
     st.divider()
@@ -200,11 +205,13 @@ with tab2:
     )
 
     if st.button("💾 Spara inställningar", type="primary"):
-        new_config = {
-            "max_price_percent": max_price_percent,
-            "max_price_cap": max_price_cap,
+        # Omvandla timmar till 15-minutersblock (multiplicera med 4) för optimeraren
+        new_config = config.copy() # Behåll befintliga fält om det finns några
+        new_config.update({
+            "min_on_blocks": min_on_hours * 4,
+            "max_off_blocks": max_off_hours * 4,
             "cold_temp_threshold": cold_temp_threshold,
             "min_minutes_cold": min_minutes_cold,
             "force_override": force_override
-        }
+        })
         save_config(new_config)

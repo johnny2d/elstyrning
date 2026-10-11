@@ -1,6 +1,8 @@
 import pytest
 from datetime import datetime
 
+from main import generate_daily_schedule
+
 # Importera beräkningslogiken från din main-fil
 # (Tänk på att bryta ut beslutstagandet till en funktion om den inte redan är det)
 def evaluate_heating_logic(current_price, current_temp, prices, config):
@@ -84,3 +86,39 @@ def test_cold_protection_activated(sample_prices):
     }
     # Priset är för högt (90 öre), men det är -10°C ute och minut 10 -> Köldskydd aktiveras!
     assert evaluate_heating_logic(current_price=90.0, current_temp=-10, prices=sample_prices, config=config) is True
+
+    from main import generate_daily_schedule
+
+def test_pulp_schedule_generation():
+    # Fejka 96 kvartsspriser (högt pris 100.0 överallt)
+    mock_prices = [100.0] * 96
+    
+    # Gör 10 kvartar extra billiga (position 10 till 19)
+    for i in range(10, 20):
+        mock_prices[i] = 10.0
+
+
+    # Kraven: Minst 16 kvartar PÅ, max 12 kvartar AV i rad (3 timmar)
+    schedule = generate_daily_schedule(mock_prices, max_off_blocks=12, min_on_blocks=16)
+
+    # 1. Kontrollera att schemat har 96 slots
+    assert len(schedule) == 96
+    
+    # 2. Kontrollera att vi har minst 16 PÅ-kvartar totalt
+    assert sum(schedule) >= 16
+    
+    # 3. Kontrollera att alla billiga kvartar (10-19) blev PÅ-markerade
+    for i in range(10, 20):
+        assert schedule[i] is True
+
+    # 4. Kontrollera komfortspärren: Högst 12 AV-kvartar i rad
+    off_streak = 0
+    max_streak = 0
+    for val in schedule:
+        if not val:
+            off_streak += 1
+            max_streak = max(max_streak, off_streak)
+        else:
+            off_streak = 0
+            
+    assert max_streak <= 12

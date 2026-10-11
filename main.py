@@ -34,6 +34,30 @@ def load_gist_data():
         print(f"Fel vid hämtning från Gist: {e}")
     return {}, []
 
+def save_config_to_gist(config_data):
+    """Sparar hela config-dictionaryn till config.json i Gist."""
+    payload = {
+        "files": {
+            "config.json": {
+                "content": json.dumps(config_data, indent=2)
+            }
+        }
+    }
+    
+    if not GIST_ID:
+        print("[ERROR] GIST_ID saknas! Kan inte spara config.")
+        return
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        response = requests.patch(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            print("Konfigurationen har sparats till Gist!")
+        else:
+            print(f"[ERROR] Kunde inte spara config till Gist. Svar: {response.text}")
+    except Exception as e:
+        print(f"[ERROR] Fel vid sparande av config till Gist: {e}")
+
 def save_history(history_data):
     # Behåll bara de senaste 200 datapunkterna
     trimmed_history = history_data[-200:]
@@ -67,17 +91,18 @@ def save_history(history_data):
 import requests
 from datetime import datetime
 
-def get_nordpool_price(zone="SE3"):
+# --- NORDPOOL API (FÖR DAGEN ELLER MORGONDAGEN) ---
+def get_nordpool_price(zone="SE2", target_date=None):
     """
-    Hämtar samtliga elpriser för innevarande dygn i öre/kWh (inkl. moms) som en lista.
-    Zoner: SE1, SE2, SE3, SE4
+    Hämtar samtliga elpriser för ett givet datum i öre/kWh (inkl. moms) som en lista (96 kvartar).
+    Om target_date (datetime-objekt) inte anges används dagens datum.
     """
-    # Använd svensk lokal tid i stället för GitHubs UTC-tid
     sweden_tz = ZoneInfo("Europe/Stockholm")
-    now = datetime.now(sweden_tz)
+    if not target_date:
+        target_date = datetime.now(sweden_tz)
 
-    year = now.strftime("%Y")
-    month_day = now.strftime("%m-%d")
+    year = target_date.strftime("%Y")
+    month_day = target_date.strftime("%m-%d")
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_{zone}.json"
     
@@ -85,15 +110,19 @@ def get_nordpool_price(zone="SE3"):
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            # Omvandla från SEK/kWh till öre/kWh (SEK_per_kWh * 100) för alla tidsintervall
+            # Omvandla från SEK/kWh till öre/kWh
             prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-            if prices:
+            if len(prices) == 96:
                 return prices
+            elif len(prices) == 24: # Fallback om API mot förmodan bara ger timmar
+                prices_96 = []
+                for p in prices:
+                    prices_96.extend([p] * 4)
+                return prices_96
     except Exception as e:
-        print(f"[ERROR] Fel vid hämtning av elpris-lista: {e}")
+        print(f"[ERROR] Fel vid hämtning av elpris-lista för {target_date.strftime('%Y-%m-%d')}: {e}")
         
-    print("[WARNING] Använder reservpris-lista (50.00 öre/kWh)")
-    # Reservlista för ett helt dygn om anropet misslyckas (96 kvartar)
+    print(f"[WARNING] Kunde inte hämta priser för {target_date.strftime('%Y-%m-%d')}. Returnerar reservlista.")
     return [50.0] * 96
 
 # --- TEMPERATUR.NU API ---
@@ -163,31 +192,111 @@ def make_decision(prices, current_index, percentile_limit=50):
         print(f"[LOG] Tröskelvärde ({percentile_limit}% billigaste): {threshold_price:.2f} öre/kWh")
         
     return "ON" if is_on else "OFF", current_price
+
+import pulp
+
+def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
+    if not prices_96 or len(prices_96) != 96:
+        raise ValueError("Måste skicka in exakt 96 kvartsspriser.")
+
+    # 1. Skapa optimeringsproblemet
+    prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
+
+    # 2. Skapa en dictionary med 96 binära variabler (0 eller 1)
+    # Detta skapar variablerna: x[0], x[1], ..., x[95]
+    x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
+
+    # 3. MÅLFUNKTION: Minimera summan av pris * status
+    prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
+
+    # 4. VILLKOR 1: Minst N kvartar PÅ totalt
+    prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
+
+    # 5. VILLKOR 2: Komfortspärr – Får inte vara AV i mer än max_off_blocks kvartar i rad
+    for i in range(96 - max_off_blocks):
+        prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
+
+    import os
+    # Leta upp den fungerande 64-bitarsversionen av CBC-solvern
+    solver_path = os.path.join(
+        os.path.dirname(pulp.__file__), 
+        "solverdir", "cbc", "win", "64", "cbc.exe"
+    )
+    
+    # 6. Lös problemet med COIN_CMD eftersom en anpassad sökväg används
+    prob.solve(pulp.COIN_CMD(path=solver_path, msg=False))
+    # Returnera som boolean-lista
+    return [bool(x[i].varValue) for i in range(96)]
 # --- HOVUDLOGIK ---
+# --- HUVUDLOGIK ---
+# --- HUVUDLOGIK ---
 def main():
     print("Startar elstyrningskontroll...")
     config, history = load_gist_data()
     
-    current_temp = get_outside_temp()
-    prices = get_nordpool_price(zone="SE2")
-    
-  # Använd svensk lokal tid i stället för GitHubs UTC-tid
     sweden_tz = ZoneInfo("Europe/Stockholm")
     now = datetime.now(sweden_tz)
+    today_str = now.strftime("%Y-%m-%d")
+    tomorrow_str = (now.replace(hour=0, minute=0, second=0) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") if 'pd' in globals() else str(now.date() + pd.Timedelta(days=1) if False else "")
+    # Alternativ utan pandas för datumberäkning av morgondagen:
+    from datetime import timedelta
+    tomorrow_dt = now + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+    current_temp = get_outside_temp()
     
-    # Dynamisk indexering beroende på om API returnerar 96 kvartar eller 24 timmar
-    if len(prices) == 24:
-        quarter_index = now.hour
-    else:
-        quarter_index = (now.hour * 4) + (now.minute // 15)
+    # --- 1. SCHEMAHANTERING & DYGNSVÄXLING ---
+    active_schedule_date = config.get("schedule_date")
+    daily_schedule = config.get("daily_schedule")
     
-    # Säkerställ att index finns i listan (faller tillbaka på sista elementet eller pris 0 vid gränsfall)
-    if quarter_index < len(prices):
-        current_price = prices[quarter_index]
-    else:
-        current_price = prices[-1] if prices else 50.0
-    
-    # 1. Kolla Manuell överstyrning från GUI
+    tomorrow_schedule_date = config.get("tomorrow_schedule_date")
+    tomorrow_schedule = config.get("tomorrow_schedule")
+
+    # Om dygnet har skiftat och vi har morgondagens schema sparat som dagens, flytta fram det!
+    if active_schedule_date != today_str:
+        if tomorrow_schedule_date == today_str and tomorrow_schedule:
+            print("Nytt dygn: Flyttar över morgondagens förberäknade schema till aktivt schema!")
+            daily_schedule = tomorrow_schedule
+            active_schedule_date = today_str
+            # Rensa morgondagens eftersom det nu är idag
+            config["tomorrow_schedule"] = None
+            config["tomorrow_schedule_date"] = None
+        else:
+            print("Saknar giltigt schema för idag. Genererar on-the-fly...")
+            prices_today = get_nordpool_price(zone="SE2", target_date=now)
+            max_off = config.get("max_off_blocks", 12)
+            min_on = config.get("min_on_blocks", 32)
+            daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on)
+            active_schedule_date = today_str
+
+        config["schedule_date"] = active_schedule_date
+        config["daily_schedule"] = daily_schedule
+        # Spara uppdateringen till Gist direkt
+        save_config_to_gist(config)
+
+    # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN (Körs efter kl. 14:00 om det saknas) ---
+    if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
+        print("Klockan är efter 14:00. Försöker hämta och optimera morgondagens priser...")
+        prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+        
+        # Kontrollera att vi faktisk fått nya priser (inte bara fallback på 50.0 överallt)
+        if len(set(prices_tomorrow)) > 1: 
+            max_off = config.get("max_off_blocks", 12)
+            min_on = config.get("min_on_blocks", 32)
+            
+            print("Kör PuLP-optimering för morgondagen...")
+            new_tomorrow_sched = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on)
+            
+            config["tomorrow_schedule_date"] = tomorrow_str
+            config["tomorrow_schedule"] = new_tomorrow_sched
+            save_config_to_gist(config)
+            print("Morgondagens schema har förhandsberäknats och sparats!")
+
+    # --- 3. AVSLUTANDE DRIFTKÖRNING FÖR AKTUELL KVART ---
+    prices_today = get_nordpool_price(zone="SE2", target_date=now)
+    quarter_index = (now.hour * 4) + (now.minute // 15)
+    current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
+
     override = config.get("force_override", "AUTO")
     should_be_on = False
     
@@ -198,35 +307,26 @@ def main():
         should_be_on = False
         print("Läge: Manuell AV")
     else:
-        # AUTO-LÄGE
-        max_percent = config.get("max_price_percent", 50)
-        max_cap = config.get("max_price_cap", 250)
+        # Hämta status från det aktiva dygns-schemat
+        if daily_schedule and len(daily_schedule) == 96:
+            should_be_on = daily_schedule[quarter_index]
+        else:
+            should_be_on = True # Fallback
+
+        # Köldskydd som säkerhetsspärr
         cold_threshold = config.get("cold_temp_threshold", 0)
         min_mins_cold = config.get("min_minutes_cold", 15)
         
-        # Sortera alla priser för att hitta gränsvärdet för de X% billigaste
-        sorted_prices = sorted(prices)
-        cutoff_index = int(len(sorted_prices) * (max_percent / 100.0))
-        price_limit = sorted_prices[min(cutoff_index, len(sorted_prices) - 1)]
-        
-        # Regel A: Är det inom de billigaste procenten OCH under maxpris-spärren?
-        if current_price <= price_limit and current_price <= max_cap:
-            should_be_on = True
-            
-        # Regel B: Köldskydd – om det är kallt, se till att det går minst viss tid per timme
         if current_temp <= cold_threshold and min_mins_cold > 0:
-            mins_in_hour = now.minute
-            if mins_in_hour < min_mins_cold:
+            if now.minute < min_mins_cold:
                 should_be_on = True
-                print(f"Köldskydd aktiverat ({current_temp}°C <= {cold_threshold}°C): Tvingar körtid första {min_mins_cold} min i timmen.")
+                print(f"Köldskydd aktiverat ({current_temp}°C <= {cold_threshold}°C): Tvingar igång.")
 
     status_str = "ON" if should_be_on else "OFF"
     print(f"Pris: {current_price:.2f} öre/kWh | Temp: {current_temp}°C | Beslut: {status_str}")
     
-    # Slå på eller av Deltaco/Tuya-kontakten
     set_tuya_switch(should_be_on)
     
-    # Spara datapunkt till historiken
     log_entry = {
         "timestamp": now.strftime("%Y-%m-%d %H:%M"),
         "price": round(current_price, 2),
@@ -235,7 +335,3 @@ def main():
     }
     history.append(log_entry)
     save_history(history)
-    print("Loggat till history.json i Gist!")
-
-if __name__ == "__main__":
-    main()
