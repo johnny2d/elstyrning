@@ -109,6 +109,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
     
     try:
         res = requests.get(url, timeout=10)
+        print(f"Hämtar URL: {url} - Statuskod: {res.status_code}")
         if res.status_code == 200:
             data = res.json()
             # Omvandla från SEK/kWh till öre/kWh
