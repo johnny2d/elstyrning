@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import json
-from main import main, generate_daily_schedule
+from main import main, generate_daily_schedule, get_nordpool_price
 
 # Kör huvudlogiken (hämtar priser, kollar dygnsbyte, kör optimering för morgondagen om klockan är > 14)
 main()
@@ -234,24 +234,7 @@ with tab3:
 
     # Hjälpfunktion för att hämta priser direkt i Streamlit för visning
     def fetch_prices_for_date(target_date):
-        year = target_date.strftime("%Y")
-        month = target_date.strftime("%m")
-        day = target_date.strftime("%d")
-        url = f"https://api.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_SE2.json"
-        try:
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-                if len(prices) == 24: # Fallback om timmar istället för kvartar
-                    p96 = []
-                    for p in prices:
-                        p96.extend([p] * 4)
-                    return p96
-                return prices
-        except:
-            pass
-        return [50.0] * 96
+        return get_nordpool_price(zone="SE2", target_date=target_date)
 
     # Visningsval: Idag eller Imorgon
     selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True)
