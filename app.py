@@ -237,7 +237,7 @@ with tab2:
             new_config["tomorrow_schedule"] = new_schedule
             new_config["tomorrow_schedule_date"] = tomorrow_str
         except Exception as e:
-            st.warning(f kunde inte räkna om morgondagens schema direkt: {e}")
+            st.warning("f kunde inte räkna om morgondagens schema direkt: {e}")
 
         # Spara allt (inklusive nya schemat) till Gist
         save_config(new_config)
