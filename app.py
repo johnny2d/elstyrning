@@ -1,6 +1,10 @@
 import streamlit as st
 import requests
 import json
+from main import main, generate_daily_schedule
+
+# Kör huvudlogiken (hämtar priser, kollar dygnsbyte, kör optimering för morgondagen om klockan är > 14)
+main()
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
