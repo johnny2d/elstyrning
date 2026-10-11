@@ -220,7 +220,28 @@ with tab2:
             "min_minutes_cold": min_minutes_cold,
             "force_override": force_override
         })
+
+        # Hämta morgondagens priser direkt och räkna om schemat på flummet!
+        try:
+            tomorrow_dt = datetime.now(sweden_tz) + timedelta(days=1)
+            tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+            
+            # Kör PuLP-optimering med de nya inställningarna
+            new_schedule = generate_daily_schedule(
+                prices_tomorrow, 
+                max_off_blocks=new_config["max_off_blocks"], 
+                min_on_blocks=new_config["min_on_blocks"]
+            )
+            
+            new_config["tomorrow_schedule"] = new_schedule
+            new_config["tomorrow_schedule_date"] = tomorrow_str
+        except Exception as e:
+            st.warning(f kunde inte räkna om morgondagens schema direkt: {e}")
+
+        # Spara allt (inklusive nya schemat) till Gist
         save_config(new_config)
+        st.rerun() # Ladda om sidan direkt så grafen uppdateras!
 
         # --- TAB 3: SCHEMA & PRISER (IDAG & IMORGON) ---
 with tab3:
