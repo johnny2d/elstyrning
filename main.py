@@ -205,6 +205,8 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
 
     # 2. Skapa en dictionary med 96 binära variabler (0 eller 1)
     # Detta skapar variablerna: x[0], x[1], ..., x[95]
+    print("PULP VERSION:", pulp.__version__)
+    print("DIR PULP:", dir(pulp))
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
     # 3. MÅLFUNKTION: Minimera summan av pris * status
