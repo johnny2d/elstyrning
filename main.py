@@ -158,18 +158,38 @@ def make_decision(prices, current_index, percentile_limit=50):
         is_on = current_price <= threshold_price
     return "ON" if is_on else "OFF", current_price
 
-def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
+import pulp
+
+def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15):
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartsspriser.")
 
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
     
+    # Målfunktion: Minimera totala kostnaden
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
+    
+    # Grundläggande krav: Minsta totala antal körtimmar/block per dygn
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
+    # Max antal tillåtna avstängda block i rad
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
+
+    # --- NYTT: Köldskyddsvillkor i optimeringen ---
+    # Om det är kallare än gränsvärdet, räkna om hur många kvartar per timme 
+    # (eller totalt) som minst måste vara på för att uppfylla 'min_minutes_cold'.
+    if current_temp <= cold_threshold and min_minutes_cold > 0:
+        # Hur många 15-minutersblock per timme motsvarar min_minutes_cold?
+        # Exempel: 15 minuter = 1 block per timme. 60 minuter = 4 block per timme (konstant på).
+        blocks_per_hour_required = max(1, min_minutes_cold // 15)
+        
+        # Tvinga fram detta krav för varje enskild timme på dygnet (24 timmar)
+        for hour in range(24):
+            start_slot = hour * 4
+            end_slot = start_slot + 4
+            prob += pulp.lpSum([x[j] for j in range(start_slot, end_slot)]) >= blocks_per_hour_required
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
