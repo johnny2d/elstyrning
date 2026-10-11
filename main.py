@@ -1,6 +1,5 @@
 import os
 import json
-from pulp import LpProblem, LpMinimize, LpVariable, LpBinary, lpSum, COIN_CMD
 import pulp  # Kan ha kvar denna om den används på andra ställen, eller ta bort
 import requests
 from datetime import datetime, timedelta, timezone
@@ -206,7 +205,7 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
 
     # 2. Skapa en dictionary med 96 binära variabler (0 eller 1)
     # Detta skapar variablerna: x[0], x[1], ..., x[95]
-    x = LpVariable.dicts("slot", range(96), cat=LpBinary)
+    x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
     # 3. MÅLFUNKTION: Minimera summan av pris * status
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
