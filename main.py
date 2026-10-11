@@ -207,7 +207,8 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
     # Detta skapar variablerna: x[0], x[1], ..., x[95]
     print("PULP VERSION:", pulp.__version__)
     print("DIR PULP:", dir(pulp))
-    x = {i: pulp.LpVariable(f"slot_{i}", 0, 1, pulp.LpBinary) for i in range(96)}
+    x = {i: pulp.LpVariable(f"slot_{i}", lowBound=0, upBound=1, cat=pulp.LpBinary) for i in range(96)}
+
     # 3. MÅLFUNKTION: Minimera summan av pris * status
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
 
