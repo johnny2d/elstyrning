@@ -78,7 +78,7 @@ config, history = load_gist_data()
 st.title("⚡ Elstyrning & Övervakning")
 
 # Använd flikar för att dela upp Gränssnitt och Historik/Graf
-tab1, tab2 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar"])
+tab1, tab2, tab3 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser"])
 
 # --- TAB 1: HISTORIK OCH GRAFER ---
 with tab1:
@@ -215,3 +215,117 @@ with tab2:
             "force_override": force_override
         })
         save_config(new_config)
+
+        # --- TAB 3: SCHEMA & PRISER (IDAG & IMORGON) ---
+with tab3:
+    st.subheader("Planerat elschema & priser")
+    
+    sweden_tz = ZoneInfo("Europe/Stockholm")
+    now = datetime.now(sweden_tz)
+    today_str = now.strftime("%Y-%m-%d")
+    tomorrow_dt = now + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+    # Hjälpfunktion för att hämta priser direkt i Streamlit för visning
+    def fetch_prices_for_date(target_date):
+        year = target_date.strftime("%Y")
+        month_day = target_date.strftime("%m-%d")
+        url = f"https://api.elprisetjustnu.se/api/v1/prices/{year}/{month_day}_SE2.json"
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+                if len(prices) == 24: # Fallback om timmar istället för kvartar
+                    p96 = []
+                    for p in prices:
+                        p96.extend([p] * 4)
+                    return p96
+                return prices
+        except:
+            pass
+        return [50.0] * 96
+
+    # Visningsval: Idag eller Imorgon
+    selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True)
+
+    if "Idag" in selected_day_tab:
+        st.markdown(f"### Dagens schema ({today_str})")
+        prices = fetch_prices_for_date(now)
+        schedule = config.get("daily_schedule")
+        
+        # Om schema saknas eller har fel längd, visa varning
+        if not schedule or len(schedule) != 96:
+            st.warning("Inget giltigt dygnschema sparat i Gist än. Visar råa priser.")
+            schedule = [True] * 96
+
+    else:
+        st.markdown(f"### Morgondagens schema ({tomorrow_str})")
+        prices = fetch_prices_for_date(tomorrow_dt)
+        schedule = config.get("tomorrow_schedule")
+        
+        # Kolla om morgondagens schema redan ligger sparat i Gist
+        if config.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
+            if now.hour >= 14:
+                st.info("Klockan är efter 14:00. Hämtar priser och simulerar morgondagens optimering...")
+                # Om vi vill visa en direkt uträknad simulering i gränssnittet
+                from main import generate_daily_schedule # Importera din optimerare om den ligger i samma mapp
+                max_off = config.get("max_off_blocks", 12)
+                min_on = config.get("min_on_blocks", 32)
+                schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on)
+            else:
+                st.warning(f"Morgondagens priser och schema har inte genererats ännu (Nordpool släpper morgondagens priser runt kl. 13-14. Klockan är nu {now.strftime('%H:%M')}).")
+                schedule = [True] * 96
+
+    # Skapa tidsaxlar för 96 kvartar (00:00 till 23:45)
+    times = []
+    for h in range(24):
+        for m in [0, 15, 30, 45]:
+            times.append(f"{h:02d}:{m:02d}")
+
+    df_view = pd.DataFrame({
+        "Tid": times,
+        "Pris (öre/kWh)": prices[:len(times)],
+        "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
+        "status_num": [1 if s else 0 for s in schedule[:len(times)]]
+    })
+
+    # Rita upp Plotly-graf för vald dag
+    fig_view = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Statuslinje
+    status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+    fig_view.add_trace(
+        go.Scatter(
+            x=df_view["Tid"], y=df_view["status_num"],
+            name="Planerad Status", mode="lines+markers",
+            line=dict(shape="hv", color="rgba(150, 150, 150, 0.4)", width=2),
+            marker=dict(size=8, color=status_colors)
+        ),
+        secondary_y=True
+    )
+
+    # Prislinje
+    fig_view.add_trace(
+        go.Scatter(
+            x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
+            name="Elpris (öre/kWh)", mode="lines",
+            line=dict(color="#29b6f6", width=2)
+        ),
+        secondary_y=False
+    )
+
+    fig_view.update_layout(
+        hovermode="x unified",
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    fig_view.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
+    fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
+
+    st.plotly_chart(fig_view, use_container_width=True)
+
+    # Expander med tabell
+    with st.expander("Visa tabell med samtliga kvartar"):
+        st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Status"]], use_container_width=True)
