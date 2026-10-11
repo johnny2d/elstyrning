@@ -226,7 +226,8 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
     )
     
     # 6. Lös problemet med COIN_CMD eftersom en anpassad sökväg används
-    prob.solve(pulp.COIN_CMD(path=solver_path, msg=False))
+    # Låt PuLP välja standard-solver automatiskt (fungerar bäst i molnet)
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
     # Returnera som boolean-lista
     return [bool(x[i].varValue) for i in range(96)]
 
