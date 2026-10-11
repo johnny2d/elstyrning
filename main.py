@@ -216,6 +216,9 @@ def main():
 
     # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN ---
     print(f"[DEBUG] Nuvarande timme: {now.hour}, sparat morgondagsschema datum: {tomorrow_schedule_date}, förväntat: {tomorrow_str}")
+    # TILLFÄLLIG TVINGAD UPPDATERING: Nollställ för att tvinga fram ny hämtning
+    # (Du kan ta bort den här raden sen när det är klart)
+    tomorrow_schedule_date = None
     if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
         print("Klockan är efter 14:00. Försöker hämta och optimera morgondagens priser...")
         prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
