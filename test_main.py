@@ -1,5 +1,6 @@
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from main import generate_daily_schedule
 
@@ -122,3 +123,40 @@ def test_pulp_schedule_generation():
             off_streak = 0
             
     assert max_streak <= 12
+
+
+    def test_simulation_workflow():
+        # 1. Skapa mock-config som simulerar gårdagen
+        sweden_tz = ZoneInfo("Europe/Stockholm")
+        now = datetime.now(sweden_tz)
+        yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        mock_config = {
+            "schedule_date": yesterday_str,
+            "daily_schedule": [True] * 96,
+            "tomorrow_date": None,
+            "tomorrow_schedule": [False] * 96,
+            "tomorrow_schedule_date": tomorrow_str,
+            "max_off_blocks": 12,
+            "min_on_blocks": 32,
+            "force_override": "AUTO"
+    }
+
+        # 2. Simulera dygnsbytet (det som händer i början av main())
+        # Om active_schedule_date != today_str och morgondagens schema finns:
+        active_schedule_date = mock_config["schedule_date"]
+        today_str = now.strftime("%Y-%m-%d")
+        
+        if active_schedule_date != today_str:
+            if mock_config["tomorrow_schedule_date"] == today_str and mock_config["tomorrow_schedule"]:
+                mock_config["daily_schedule"] = mock_config["tomorrow_schedule"]
+                mock_config["schedule_date"] = today_str
+                mock_config["tomorrow_schedule"] = None
+                mock_config["tomorrow_schedule_date"] = None
+
+        # 3. Verifiera att loppet flyttades över korrekt
+        assert mock_config["schedule_date"] == today_str
+        assert mock_config["daily_schedule"] == [False] * 96
+        assert mock_config["tomorrow_schedule"] is None
+        print("Simulering av dygnsbyte lyckades!")

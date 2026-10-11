@@ -227,9 +227,8 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32):
     prob.solve(pulp.COIN_CMD(path=solver_path, msg=False))
     # Returnera som boolean-lista
     return [bool(x[i].varValue) for i in range(96)]
+
 # --- HOVUDLOGIK ---
-# --- HUVUDLOGIK ---
-# --- HUVUDLOGIK ---
 def main():
     print("Startar elstyrningskontroll...")
     config, history = load_gist_data()
@@ -237,11 +236,12 @@ def main():
     sweden_tz = ZoneInfo("Europe/Stockholm")
     now = datetime.now(sweden_tz)
     today_str = now.strftime("%Y-%m-%d")
-    tomorrow_str = (now.replace(hour=0, minute=0, second=0) + pd.Timedelta(days=1)).strftime("%Y-%m-%d") if 'pd' in globals() else str(now.date() + pd.Timedelta(days=1) if False else "")
-    # Alternativ utan pandas för datumberäkning av morgondagen:
     from datetime import timedelta
+    # Beräkna morgondagens datum med inbyggda timedelta
     tomorrow_dt = now + timedelta(days=1)
     tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+   
+   
 
     current_temp = get_outside_temp()
     
