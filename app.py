@@ -224,7 +224,7 @@ with tab2:
         })
 
         # Hämta morgondagens priser direkt och räkna om schemat på flummet!
-       try:
+    try:
         tomorrow_dt = datetime.now(sweden_tz) + timedelta(days=1)
         tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
         prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
