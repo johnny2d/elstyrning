@@ -33,4 +33,4 @@ jobs:
           TUYA_API_SECRET: ${{ secrets.TUYA_API_SECRET }}
           TUYA_DEVICE_ID: ${{ secrets.TUYA_DEVICE_ID }}
           TUYA_REGION: "eu"
-        run: python main.py
+        run: python -u main.py
