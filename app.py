@@ -215,14 +215,15 @@ with tab2:
             # Optimera både idag och imorgon direkt
             prices_today = get_nordpool_price(zone="SE2", target_date=now)
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-
+            price_cap=config.get("price_cap", 50.0)
             new_schedule_today = generate_daily_schedule(
                 prices_today, 
                 max_off_blocks=new_config["max_off_blocks"], 
                 min_on_blocks=new_config["min_on_blocks"],
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
-                min_minutes_cold=new_config["min_minutes_cold"]
+                min_minutes_cold=new_config["min_minutes_cold"],
+                price_cap=price_cap
             )
 
             new_schedule_tomorrow = generate_daily_schedule(
@@ -231,7 +232,8 @@ with tab2:
                 min_on_blocks=new_config["min_on_blocks"],
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
-                min_minutes_cold=new_config["min_minutes_cold"]
+                min_minutes_cold=new_config["min_minutes_cold"],
+                price_cap=price_cap
             )
             
             new_config["schedule_date"] = today_str
@@ -263,9 +265,9 @@ with tab2:
                 min_on = config.get("min_on_blocks", 44)
                 cold_th = config.get("cold_temp_threshold", 0)
                 min_mins = config.get("min_minutes_cold", 15)
-
-                sched_today = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins)
-                sched_tomorrow = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins)
+                price_cap=config.get("price_cap", 50.0)
+                sched_today = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=price_cap)
+                sched_tomorrow = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=price_cap)
 
                 updated_config = config.copy()
                 updated_config["schedule_date"] = today_str
@@ -307,7 +309,8 @@ with tab3:
         if config.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
             max_off = config.get("max_off_blocks", 12)
             min_on = config.get("min_on_blocks", 44)
-            schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on)
+            price_cap=config.get("price_cap", 50.0)
+            schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, price_cap=price_cap)
 
     times = []
     for h in range(24):

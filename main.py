@@ -141,7 +141,7 @@ def set_tuya_switch(state: bool):
     except Exception:
         pass
 
-def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15):
+def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15, price_cap=50.0):
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartsspriser.")
 
@@ -151,12 +151,18 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
     # Målfunktion: Minimera totala kostnaden
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
     
-    # Grundläggande krav: Minsta totala antal körtimmar/block per dygn (höjt till 44 för att få fylligare körning)
+    # Grundläggande krav: Minsta totala antal körtimmar/block per dygn
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
     # Max antal tillåtna avstängda block i rad
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
+
+    # --- NYTT: Om priset är under pristaket, tvinga PÅ i optimeringen ---
+    if price_cap is not None:
+        for i in range(96):
+            if prices_96[i] <= price_cap:
+                prob += x[i] == 1
 
     # Köldskyddsvillkor i optimeringen
     if current_temp <= cold_threshold and min_minutes_cold > 0:
@@ -168,7 +174,6 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
-
 # --- HUVUDLOGIK ---
 def main():
     try:
@@ -207,7 +212,8 @@ def main():
             else:
                 print("Saknar giltigt schema för idag. Genererar on-the-fly...")
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
-                daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp)
+                price_cap=config.get("price_cap", 50.0)
+                daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, price_cap=price_cap)
                 active_schedule_date = today_str
 
             config["schedule_date"] = active_schedule_date
@@ -223,6 +229,7 @@ def main():
             print(f"[DEBUG] Unika prisvärden i morgondagens prislista: {len(set(prices_tomorrow))}")
             if len(set(prices_tomorrow)) > 1: 
                 print("Kör PuLP-optimering för morgondagen...")
+                price_cap=config.get("price_cap", 50.0)
                 new_tomorrow_sched = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp)
                 
                 config["tomorrow_schedule_date"] = tomorrow_str
