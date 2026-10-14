@@ -13,7 +13,7 @@ try:
     GEMINI_AVAILABLE = "genai_new"
 except ImportError:
     try:
-        import google.generativeai as genai_old
+        import google.genai as genai_old
         GEMINI_AVAILABLE = "genai_old"
     except ImportError:
         GEMINI_AVAILABLE = False
