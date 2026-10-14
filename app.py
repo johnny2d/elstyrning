@@ -3,15 +3,23 @@ import requests
 from zoneinfo import ZoneInfo
 sweden_tz = ZoneInfo("Europe/Stockholm")
 import json
-from main import main, generate_daily_schedule, get_nordpool_price, get_outside_temp
-
-# Kör huvudlogiken
-main()
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# Importera även väder och AI från main.py
+from main import (
+    main, 
+    generate_daily_schedule, 
+    get_nordpool_price, 
+    get_outside_temp, 
+    get_hourly_temp_forecast, 
+    get_ai_optimized_parameters
+)
+
+# Kör huvudlogiken
+main()
 
 st.set_page_config(page_title="Elstyrning Control Panel", page_icon="⚡", layout="wide")
 
@@ -44,17 +52,14 @@ headers = {
     "Accept": "application/vnd.github.v3+json"
 }
 
-
 @st.cache_data(ttl=15)
 def load_gist_data():
     try:
         res = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers)
         if res.status_code == 200:
             files = res.json()["files"]
-            
             config = json.loads(files["config.json"]["content"]) if "config.json" in files else {}
             history = json.loads(files["history.json"]["content"]) if "history.json" in files else []
-            
             return config, history
     except Exception as e:
         st.error(f"Kunde inte ladda data från Gist: {e}")
@@ -85,6 +90,10 @@ def save_config(config_data):
 config, history = load_gist_data()
 
 st.title("⚡ Elstyrning & Övervakning")
+
+# Visa AI:ns senaste motivering om den finns sparad
+if config.get("ai_latest_reasoning"):
+    st.info(f"🤖 **AI-Strategens analys:** {config.get('ai_latest_reasoning')}")
 
 tab1, tab2, tab3 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser"])
 
@@ -151,12 +160,12 @@ with tab1:
 
 # --- TAB 2: INSTÄLLNINGAR ---
 with tab2:
-    st.subheader("1. Optimeringsparametrar (PuLP)")
+    st.subheader("1. Optimeringsparametrar & AI")
     
     min_on_hours = st.slider(
-        "Minsta totala körtid per dygn (timmar)",
+        "Minsta totala körtid per dygn (timmar - utgångspunkt för AI)",
         min_value=4, max_value=24, value=int(config.get("min_on_blocks", 44) / 4), step=1,
-        help="Hur många timmar per dygn som värmen absolut minst måste vara igång."
+        help="Används som bas för vad AI:n eller PuLP utgår ifrån."
     )
     
     max_off_hours = st.slider(
@@ -166,9 +175,9 @@ with tab2:
     )
 
     price_cap = st.slider(
-        "Pristak (öre/kWh) – Tvinga PÅ om priset är under",
+        "Pristak (öre/kWh) – Standard / basvärde för AI",
         min_value=10, max_value=150, value=int(config.get("price_cap", 50.0)), step=5,
-        help="Om elpriset understiger detta värde går pannan på direkt, oavsett optimeringsschema."
+        help="Används som utgångspunkt eller fallback för pristaket."
     )
 
     st.divider()
@@ -212,45 +221,53 @@ with tab2:
             tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
             current_temp = get_outside_temp()
 
-            # Optimera både idag och imorgon direkt
             prices_today = get_nordpool_price(zone="SE2", target_date=now)
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-            price_cap=config.get("price_cap", 50.0)
+            temp_forecast = get_hourly_temp_forecast()
+
+            # Låt AI beräkna smarta parametrar baserat på väder och pris
+            p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                prices_today, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"]
+            )
+
             new_schedule_today = generate_daily_schedule(
                 prices_today, 
                 max_off_blocks=new_config["max_off_blocks"], 
-                min_on_blocks=new_config["min_on_blocks"],
+                min_on_blocks=m_blocks,
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
                 min_minutes_cold=new_config["min_minutes_cold"],
-                price_cap=price_cap
+                price_cap=p_cap
             )
 
             new_schedule_tomorrow = generate_daily_schedule(
                 prices_tomorrow, 
                 max_off_blocks=new_config["max_off_blocks"], 
-                min_on_blocks=new_config["min_on_blocks"],
+                min_on_blocks=m_blocks,
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
                 min_minutes_cold=new_config["min_minutes_cold"],
-                price_cap=price_cap
+                price_cap=p_cap
             )
             
             new_config["schedule_date"] = today_str
             new_config["daily_schedule"] = new_schedule_today
             new_config["tomorrow_schedule_date"] = tomorrow_str
             new_config["tomorrow_schedule"] = new_schedule_tomorrow
+            new_config["price_cap"] = p_cap
+            new_config["min_on_blocks"] = m_blocks
+            new_config["ai_latest_reasoning"] = reasoning
         except Exception as e:
-            st.warning(f"Kunde inte räkna om scheman direkt: {e}")
+            st.warning(f"Kunde inte räkna om med AI direkt: {e}")
 
         save_config(new_config)
         st.cache_data.clear()
         st.rerun()
 
     st.divider()
-    st.subheader("4. Tvångskörning")
-    if st.button("🔄 Forcera omräkning av scheman nu"):
-        with st.spinner("Hämtar priser och kör om PuLP-optimering för idag och imorgon..."):
+    st.subheader("4. Tvångskörning & AI-omräkning")
+    if st.button("🔄 Forcera omräkning med AI nu"):
+        with st.spinner("Hämtar priser, väderprognos och låter AI optimera schemat..."):
             try:
                 now = datetime.now(sweden_tz)
                 today_str = now.strftime("%Y-%m-%d")
@@ -260,27 +277,43 @@ with tab2:
 
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
                 prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+                temp_forecast = get_hourly_temp_forecast()
 
                 max_off = config.get("max_off_blocks", 12)
                 min_on = config.get("min_on_blocks", 44)
                 cold_th = config.get("cold_temp_threshold", 0)
                 min_mins = config.get("min_minutes_cold", 15)
-                price_cap=config.get("price_cap", 50.0)
-                sched_today = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=price_cap)
-                sched_tomorrow = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=price_cap)
+                base_pcap = config.get("price_cap", 50.0)
+
+                # Kör AI-strategen för dagens schema
+                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                    prices_today, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on
+                )
+
+                sched_today = generate_daily_schedule(
+                    prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
+                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap
+                )
+                sched_tomorrow = generate_daily_schedule(
+                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks, 
+                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap
+                )
 
                 updated_config = config.copy()
                 updated_config["schedule_date"] = today_str
                 updated_config["daily_schedule"] = sched_today
                 updated_config["tomorrow_schedule_date"] = tomorrow_str
                 updated_config["tomorrow_schedule"] = sched_tomorrow
+                updated_config["price_cap"] = p_cap
+                updated_config["min_on_blocks"] = m_blocks
+                updated_config["ai_latest_reasoning"] = reasoning
 
                 save_config(updated_config)
                 st.cache_data.clear()
-                st.success("Scheman för både idag och imorgon har räknats om och sparats!")
+                st.success("Scheman har beräknats om med AI och sparats!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Ett fel uppstod vid omräkning: {e}")
+                st.error(f"Ett fel uppstod vid AI-omräkning: {e}")
 
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
@@ -309,7 +342,7 @@ with tab3:
         if config.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
             max_off = config.get("max_off_blocks", 12)
             min_on = config.get("min_on_blocks", 44)
-            price_cap=config.get("price_cap", 50.0)
+            price_cap = config.get("price_cap", 50.0)
             schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, price_cap=price_cap)
 
     times = []
