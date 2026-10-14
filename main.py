@@ -81,13 +81,9 @@ def get_nordpool_price(zone="SE2", target_date=None):
         target_date = datetime.now(sweden_tz)
 
     year = target_date.strftime("%Y")
-    # Använd strip för att ta bort eventuella ledande nollor om API:et är känsligt för det, 
-    # eller standard %m-%d vilket brukar vara MM-DD. 
-    # Standardformat för elprisetjustnu: YYYY/MM-DD_ZONE.json
     month = target_date.strftime("%m")
     day = target_date.strftime("%d")
     
-    # Testa med bindestreck mellan år, månad och dag enligt deras exakta standard:
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
     print(f"[DEBUG] Försöker hämta URL: {url}")
     
@@ -116,7 +112,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
-    station = os.getenv("TEMPERATUR_NU_STATION", "lugnvik")
+    station = os.getenv("TEMPERATUR_NU_STATION", "ostersund")
     url = f"http://www.temperatur.nu/termo/{station}/temp.txt"
     try:
         res = requests.get(url, timeout=5)
@@ -145,22 +141,7 @@ def set_tuya_switch(state: bool):
     except Exception:
         pass
 
-def make_decision(prices, current_index, percentile_limit=50):
-    if not prices or current_index >= len(prices):
-        current_price = 50.0
-        is_on = True
-    else:
-        current_price = prices[current_index]
-        sorted_prices = sorted(prices)
-        cutoff_index = int(len(sorted_prices) * (percentile_limit / 100.0)) - 1
-        cutoff_index = max(0, cutoff_index)
-        threshold_price = sorted_prices[cutoff_index]
-        is_on = current_price <= threshold_price
-    return "ON" if is_on else "OFF", current_price
-
-import pulp
-
-def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15):
+def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15):
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartsspriser.")
 
@@ -170,22 +151,16 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32, curr
     # Målfunktion: Minimera totala kostnaden
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
     
-    # Grundläggande krav: Minsta totala antal körtimmar/block per dygn
+    # Grundläggande krav: Minsta totala antal körtimmar/block per dygn (höjt till 44 för att få fylligare körning)
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
     # Max antal tillåtna avstängda block i rad
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
 
-    # --- NYTT: Köldskyddsvillkor i optimeringen ---
-    # Om det är kallare än gränsvärdet, räkna om hur många kvartar per timme 
-    # (eller totalt) som minst måste vara på för att uppfylla 'min_minutes_cold'.
+    # Köldskyddsvillkor i optimeringen
     if current_temp <= cold_threshold and min_minutes_cold > 0:
-        # Hur många 15-minutersblock per timme motsvarar min_minutes_cold?
-        # Exempel: 15 minuter = 1 block per timme. 60 minuter = 4 block per timme (konstant på).
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
-        
-        # Tvinga fram detta krav för varje enskild timme på dygnet (24 timmar)
         for hour in range(24):
             start_slot = hour * 4
             end_slot = start_slot + 4
@@ -194,7 +169,6 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=32, curr
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
 
-# --- HUVUDLOGIK ---
 # --- HUVUDLOGIK ---
 def main():
     try:
@@ -211,6 +185,11 @@ def main():
 
         current_temp = get_outside_temp()
         
+        # Hämta eller sätt standardvärden för konfiguration
+        max_off = config.get("max_off_blocks", 12)
+        min_on = config.get("min_on_blocks", 44) # Höjt standardvärde
+        price_cap = config.get("price_cap", 50.0) # Pristak i öre (t.ex. 50 öre)
+
         # --- 1. SCHEMAHANTERING & DYGNSVÄXLING ---
         active_schedule_date = config.get("schedule_date")
         daily_schedule = config.get("daily_schedule")
@@ -228,9 +207,7 @@ def main():
             else:
                 print("Saknar giltigt schema för idag. Genererar on-the-fly...")
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
-                max_off = config.get("max_off_blocks", 12)
-                min_on = config.get("min_on_blocks", 32)
-                daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on)
+                daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp)
                 active_schedule_date = today_str
 
             config["schedule_date"] = active_schedule_date
@@ -245,11 +222,8 @@ def main():
             
             print(f"[DEBUG] Unika prisvärden i morgondagens prislista: {len(set(prices_tomorrow))}")
             if len(set(prices_tomorrow)) > 1: 
-                max_off = config.get("max_off_blocks", 12)
-                min_on = config.get("min_on_blocks", 32)
-                
                 print("Kör PuLP-optimering för morgondagen...")
-                new_tomorrow_sched = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on)
+                new_tomorrow_sched = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp)
                 
                 config["tomorrow_schedule_date"] = tomorrow_str
                 config["tomorrow_schedule"] = new_tomorrow_sched
@@ -271,11 +245,18 @@ def main():
         elif override == "AV (Stäng av allt)":
             should_be_on = False
         else:
-            if daily_schedule and len(daily_schedule) == 96:
-                should_be_on = daily_schedule[quarter_index]
-            else:
+            # 1. Kolla om priset understiger vårt pristak (t.ex. 50 öre) -> Kör direkt!
+            if current_price <= price_cap:
                 should_be_on = True
+                print(f"[PRISTAK] Priset ({current_price} öre) är under pristaket ({price_cap} öre). Tvingar PÅ.")
+            else:
+                # 2. Annars kikar vi på optimeringsschemat
+                if daily_schedule and len(daily_schedule) == 96:
+                    should_be_on = daily_schedule[quarter_index]
+                else:
+                    should_be_on = True
 
+            # 3. Köldskyddsregler
             cold_threshold = config.get("cold_temp_threshold", 0)
             min_mins_cold = config.get("min_minutes_cold", 15)
             
