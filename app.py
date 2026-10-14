@@ -3,9 +3,9 @@ import requests
 from zoneinfo import ZoneInfo
 sweden_tz = ZoneInfo("Europe/Stockholm")
 import json
-from main import main, generate_daily_schedule, get_nordpool_price
+from main import main, generate_daily_schedule, get_nordpool_price, get_outside_temp
 
-# Kör huvudlogiken (hämtar priser, kollar dygnsbyte, kör optimering för morgondagen om klockan är > 14)
+# Kör huvudlogiken
 main()
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -86,7 +86,6 @@ config, history = load_gist_data()
 
 st.title("⚡ Elstyrning & Övervakning")
 
-# Använd flikar för att dela upp Gränssnitt och Historik/Graf
 tab1, tab2, tab3 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser"])
 
 # --- TAB 1: HISTORIK OCH GRAFER ---
@@ -207,12 +206,26 @@ with tab2:
         })
 
         try:
-            tomorrow_dt = datetime.now(sweden_tz) + timedelta(days=1)
+            now = datetime.now(sweden_tz)
+            today_str = now.strftime("%Y-%m-%d")
+            tomorrow_dt = now + timedelta(days=1)
             tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
-            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-            current_temp = float(config.get("current_temp", 10.0))
+            current_temp = get_outside_temp()
 
-            new_schedule = generate_daily_schedule(
+            # Optimera både idag och imorgon direkt
+            prices_today = get_nordpool_price(zone="SE2", target_date=now)
+            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+
+            new_schedule_today = generate_daily_schedule(
+                prices_today, 
+                max_off_blocks=new_config["max_off_blocks"], 
+                min_on_blocks=new_config["min_on_blocks"],
+                current_temp=current_temp,
+                cold_threshold=new_config["cold_temp_threshold"],
+                min_minutes_cold=new_config["min_minutes_cold"]
+            )
+
+            new_schedule_tomorrow = generate_daily_schedule(
                 prices_tomorrow, 
                 max_off_blocks=new_config["max_off_blocks"], 
                 min_on_blocks=new_config["min_on_blocks"],
@@ -221,13 +234,51 @@ with tab2:
                 min_minutes_cold=new_config["min_minutes_cold"]
             )
             
-            new_config["tomorrow_schedule"] = new_schedule
+            new_config["schedule_date"] = today_str
+            new_config["daily_schedule"] = new_schedule_today
             new_config["tomorrow_schedule_date"] = tomorrow_str
+            new_config["tomorrow_schedule"] = new_schedule_tomorrow
         except Exception as e:
-            st.warning(f"Kunde inte räkna om morgondagens schema direkt: {e}")
+            st.warning(f"Kunde inte räkna om scheman direkt: {e}")
 
         save_config(new_config)
+        st.cache_data.clear()
         st.rerun()
+
+    st.divider()
+    st.subheader("4. Tvångskörning")
+    if st.button("🔄 Forcera omräkning av scheman nu"):
+        with st.spinner("Hämtar priser och kör om PuLP-optimering för idag och imorgon..."):
+            try:
+                now = datetime.now(sweden_tz)
+                today_str = now.strftime("%Y-%m-%d")
+                tomorrow_dt = now + timedelta(days=1)
+                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+                current_temp = get_outside_temp()
+
+                prices_today = get_nordpool_price(zone="SE2", target_date=now)
+                prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+
+                max_off = config.get("max_off_blocks", 12)
+                min_on = config.get("min_on_blocks", 44)
+                cold_th = config.get("cold_temp_threshold", 0)
+                min_mins = config.get("min_minutes_cold", 15)
+
+                sched_today = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins)
+                sched_tomorrow = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins)
+
+                updated_config = config.copy()
+                updated_config["schedule_date"] = today_str
+                updated_config["daily_schedule"] = sched_today
+                updated_config["tomorrow_schedule_date"] = tomorrow_str
+                updated_config["tomorrow_schedule"] = sched_tomorrow
+
+                save_config(updated_config)
+                st.cache_data.clear()
+                st.success("Scheman för både idag och imorgon har räknats om och sparats!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ett fel uppstod vid omräkning: {e}")
 
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
@@ -254,12 +305,9 @@ with tab3:
         prices = fetch_prices_for_date(tomorrow_dt)
         schedule = config.get("tomorrow_schedule")
         if config.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
-            if now.hour >= 14:
-                max_off = config.get("max_off_blocks", 12)
-                min_on = config.get("min_on_blocks", 44)
-                schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on)
-            else:
-                schedule = [True] * 96
+            max_off = config.get("max_off_blocks", 12)
+            min_on = config.get("min_on_blocks", 44)
+            schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on)
 
     times = []
     for h in range(24):
