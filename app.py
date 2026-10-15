@@ -3,10 +3,20 @@ import requests
 from zoneinfo import ZoneInfo
 sweden_tz = ZoneInfo("Europe/Stockholm")
 import json
+import os
 from datetime import datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# Skicka med hemligheter från Streamlit till miljövariabler så att main.py hittar dem direkt
+if hasattr(st, "secrets"):
+    if "GEMINI_API_KEY" in st.secrets:
+        os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+    if "GIST_ID" in st.secrets:
+        os.environ["GIST_ID"] = st.secrets["GIST_ID"]
+    if "GIST_TOKEN" in st.secrets:
+        os.environ["GIST_TOKEN"] = st.secrets["GIST_TOKEN"]
 
 # Importera även väder och AI från main.py
 from main import (
