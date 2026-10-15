@@ -115,16 +115,23 @@ def get_nordpool_price(zone="SE2", target_date=None):
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
+# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm"
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return data["hourly"]["temperature_2m"][:24]
+            if "hourly" in data and "temperature_2m" in data["hourly"]:
+                temps = data["hourly"]["temperature_2m"][:24]
+                if temps and any(t != 0.0 for t in temps):
+                    return temps
     except Exception as e:
-        print(f"[ERROR] Kunde inte hämta timprognos: {e}")
-    return [0.0] * 24
+        print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo: {e}")
+    
+    # Reserv: Om Open-Meteo misslyckas, hämta aktuell temperatur och fyll en lista med den
+    current_t = get_outside_temp()
+    return [current_t] * 24
 
 # --- ROBUST TEMPERATURHÄMTNING ---
 # --- TEMPERATUR.NU API (MED LUGNVIK-LÄNK) ---
