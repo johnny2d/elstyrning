@@ -127,18 +127,35 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56):
     return [0.0] * 24
 
 # --- ROBUST TEMPERATURHÄMTNING ---
+# --- TEMPERATUR.NU API (MED LUGNVIK-LÄNK) ---
 def get_outside_temp():
-    station = os.getenv("TEMPERATUR_NU_STATION", "ostersund")
-    url = f"http://temperatur.nu/termo/{station}/temp.txt"
+    url = "https://www.temperatur.nu/jstemp.php?s=lugnvik"
     try:
-        res = requests.get(url, timeout=4)
+        res = requests.get(url, timeout=5)
         if res.status_code == 200:
-            temp_str = res.text.strip()
-            if temp_str.upper() != "N/A" and temp_str != "":
-                return float(temp_str)
-    except Exception:
-        pass
+            text = res.text.strip()
+            # Om sidan svarar med t.ex. ett JSON-objekt eller direkt ett nummer, rensa och parse:
+            # Temperatur.nu jstemp brukar ofta returnera JSON eller en sträng med temperaturen.
+            try:
+                # Testa om det är JSON
+                data = res.json()
+                if "temp" in data:
+                    return float(data["temp"])
+            except Exception:
+                pass
+            
+            # Om det är en ren textsträng eller innehåller siffror
+            import re
+            numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+            if numbers:
+                val = float(numbers[0])
+                # Sanity check: Om värdet är rimligt mellan -40 och +40
+                if -40 <= val <= 40:
+                    return val
+    except Exception as e:
+        print(f"[ERROR] Kunde inte hämta temperatur från Lugnvik: {e}")
     
+    # Fallback till Open-Meteo om temperatur.nu skulle svika
     try:
         lat, lon = 63.25, 14.56
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
