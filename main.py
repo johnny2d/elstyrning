@@ -116,20 +116,35 @@ def get_nordpool_price(zone="SE2", target_date=None):
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
-def get_hourly_temp_forecast(lat=63.25, lon=14.56):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm"
+# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
+def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
+    """Hämtar timvis temperaturprognos för det specifika dygnet (idag eller imorgon)."""
+    sweden_tz = ZoneInfo("Europe/Stockholm")
+    if not target_date:
+        target_date = datetime.now(sweden_tz)
+
+    today = datetime.now(sweden_tz).date()
+    target_day = target_date.date() if isinstance(target_date, datetime) else target_date
+    day_offset = (target_day - today).days
+
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
             if "hourly" in data and "temperature_2m" in data["hourly"]:
-                temps = data["hourly"]["temperature_2m"][:24]
-                if temps and any(t != 0.0 for t in temps):
-                    return temps
+                all_temps = data["hourly"]["temperature_2m"]
+                
+                # Bestäm rätt startindex beroende på vilket dygn vi vill ha (0-23 för idag, 24-47 för imorgon)
+                start_idx = max(0, day_offset) * 24
+                end_idx = start_idx + 24
+                
+                if len(all_temps) >= end_idx:
+                    return all_temps[start_idx:end_idx]
     except Exception as e:
         print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo: {e}")
     
-    # Reserv: Om Open-Meteo misslyckas, hämta aktuell temperatur och fyll en lista med den
+    # Reserv: Hämta aktuell temperatur om API-anropet misslyckas
     current_t = get_outside_temp()
     return [current_t] * 24
 

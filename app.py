@@ -292,7 +292,7 @@ with tab3:
 
     target_dt = now if "Idag" in selected_day_tab else tomorrow_dt
     prices = get_nordpool_price(zone="SE2", target_date=target_dt)
-    temp_forecast = get_hourly_temp_forecast() # 24 timmar
+    temp_forecast = get_hourly_temp_forecast(target_date=target_dt) # Skicka med target_date!
 
     # Mappa 24 timmars temperatur till 96 kvartar för grafen
     temp_96 = []
