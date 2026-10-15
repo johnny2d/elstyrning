@@ -147,8 +147,8 @@ def get_outside_temp():
     return 0.0
 
 # --- AI STRATEGEN (GEMINI) ---
-def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44):
-    """Skickar pris och timvis utetemperatur till Gemini AI för att få optimala styrparametrar."""
+def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
+    """Skickar pris och timvis utetemperatur till Gemini AI för att få optimala styrparametrar för en specifik dag."""
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
         print("[AI] Ingen GEMINI_API_KEY hittades eller Gemini-biblioteket saknas. Använder standardinställningar.")
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
@@ -156,13 +156,13 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
     
-    Här är morgondagens elpriser i öre/kWh för varje kvart (96 st):
+    Här är elpriserna i öre/kWh för varje kvart (96 st) för {target_day_label}:
     {prices_96}
     
-    Här är morgondagens förväntade utetemperatur per timme (°C, 24 timmar):
+    Här är den förväntade utetemperaturen per timme (°C, 24 timmar) för {target_day_label}:
     {temp_hourly}
     
-    Din uppgift är att analysera prisbilden och kylan för att bestämma två nyckelparametrar:
+    Din uppgift är att analysera prisbilden och kylan för att bestämma två nyckelparametrar för just detta dygn:
     1. "price_cap": Pristak i öre/kWh (om priset understiger detta betraktas det som billigt och pannan ska köras).
     2. "min_on_hours": Totalt antal timmar (mellan 6 och 20) som värmen absolut minst behöver vara igång under dygnet för att inte huset ska kyla ur givet utetemperaturen.
 
@@ -292,37 +292,44 @@ def main():
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
                 temp_forecast = get_hourly_temp_forecast()
                 
-                # Kör AI-strategen om nyckel finns
-                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on)
+                # Kör AI-strategen för idag
+                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                    prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="idag"
+                )
                 print(f"[AI-BESLUT IDAG] {reasoning}")
                 
                 daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, current_temp=current_temp, price_cap=p_cap)
                 active_schedule_date = today_str
                 config["price_cap"] = p_cap
                 config["min_on_blocks"] = m_blocks
+                config["ai_latest_reasoning"] = reasoning
 
             config["schedule_date"] = active_schedule_date
             config["daily_schedule"] = daily_schedule
             save_config_to_gist(config)
 
-        # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN ---
+        # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN (EFTER KL 14) ---
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
             print("Klockan är efter 14:00. Hämtar priser och väderprognos för morgondagen...")
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
             temp_forecast = get_hourly_temp_forecast()
             
             if len(set(prices_tomorrow)) > 1: 
-                print("Kör AI-strategen för morgondagen...")
-                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices_tomorrow, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on)
-                print(f"[AI-BESLUT MORGONDAG] {reasoning} | Pristak: {p_cap} öre | Minsta körtid: {m_blocks/4}h")
+                print("Kör AI-strategen separat för morgondagen...")
+                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                    prices_tomorrow, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="imorgon"
+                )
+                print(f"[AI-BESLUT MORGONDAG] {reasoning_tom} | Pristak: {p_cap_tom} öre | Minsta körtid: {m_blocks_tom/4}h")
                 
-                new_tomorrow_sched = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks, current_temp=current_temp, price_cap=p_cap)
+                new_tomorrow_sched = generate_daily_schedule(
+                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                )
                 
                 config["tomorrow_schedule_date"] = tomorrow_str
                 config["tomorrow_schedule"] = new_tomorrow_sched
-                config["ai_latest_reasoning"] = reasoning
+                config["ai_latest_reasoning"] = reasoning_tom  # Spara morgondagens AI-analys direkt som synlig
                 save_config_to_gist(config)
-                print("Morgondagens schema har beräknats med AI och sparats!")
+                print("Morgondagens schema har beräknats med egen AI-analys och sparats!")
 
         # --- 3. AVSLUTANDE DRIFTKÖRNING FÖR AKTUELL KVART ---
         prices_today = get_nordpool_price(zone="SE2", target_date=now)

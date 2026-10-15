@@ -1,9 +1,9 @@
 import streamlit as st
+import os
 import requests
 from zoneinfo import ZoneInfo
 sweden_tz = ZoneInfo("Europe/Stockholm")
 import json
-import os
 from datetime import datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
@@ -235,38 +235,43 @@ with tab2:
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
             temp_forecast = get_hourly_temp_forecast()
 
-            # Låt AI beräkna smarta parametrar baserat på väder och pris
-            p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
-                prices_today, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"]
+            # 1. AI-analys för IDAG
+            p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
+                prices_today, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"], target_day_label="idag"
+            )
+
+            # 2. AI-analys separat för IMORGON
+            p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                prices_tomorrow, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"], target_day_label="imorgon"
             )
 
             new_schedule_today = generate_daily_schedule(
                 prices_today, 
                 max_off_blocks=new_config["max_off_blocks"], 
-                min_on_blocks=m_blocks,
+                min_on_blocks=m_blocks_today,
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
                 min_minutes_cold=new_config["min_minutes_cold"],
-                price_cap=p_cap
+                price_cap=p_cap_today
             )
 
             new_schedule_tomorrow = generate_daily_schedule(
                 prices_tomorrow, 
                 max_off_blocks=new_config["max_off_blocks"], 
-                min_on_blocks=m_blocks,
+                min_on_blocks=m_blocks_tom,
                 current_temp=current_temp,
                 cold_threshold=new_config["cold_temp_threshold"],
                 min_minutes_cold=new_config["min_minutes_cold"],
-                price_cap=p_cap
+                price_cap=p_cap_tom
             )
             
             new_config["schedule_date"] = today_str
             new_config["daily_schedule"] = new_schedule_today
             new_config["tomorrow_schedule_date"] = tomorrow_str
             new_config["tomorrow_schedule"] = new_schedule_tomorrow
-            new_config["price_cap"] = p_cap
-            new_config["min_on_blocks"] = m_blocks
-            new_config["ai_latest_reasoning"] = reasoning
+            new_config["price_cap"] = p_cap_today
+            new_config["min_on_blocks"] = m_blocks_today
+            new_config["ai_latest_reasoning"] = reasoning_today
         except Exception as e:
             st.warning(f"Kunde inte räkna om med AI direkt: {e}")
 
@@ -277,7 +282,7 @@ with tab2:
     st.divider()
     st.subheader("4. Tvångskörning & AI-omräkning")
     if st.button("🔄 Forcera omräkning med AI nu"):
-        with st.spinner("Hämtar priser, väderprognos och låter AI optimera schemat..."):
+        with st.spinner("Hämtar priser, väderprognos och låter AI optimera separat för idag och imorgon..."):
             try:
                 now = datetime.now(sweden_tz)
                 today_str = now.strftime("%Y-%m-%d")
@@ -295,18 +300,23 @@ with tab2:
                 min_mins = config.get("min_minutes_cold", 15)
                 base_pcap = config.get("price_cap", 50.0)
 
-                # Kör AI-strategen för dagens schema
-                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
-                    prices_today, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on
+                # 1. AI-analys för IDAG
+                p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
+                    prices_today, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on, target_day_label="idag"
+                )
+
+                # 2. AI-analys separat för IMORGON
+                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                    prices_tomorrow, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on, target_day_label="imorgon"
                 )
 
                 sched_today = generate_daily_schedule(
-                    prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
-                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap
+                    prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, 
+                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_today
                 )
                 sched_tomorrow = generate_daily_schedule(
-                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks, 
-                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap
+                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, 
+                    current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_tom
                 )
 
                 updated_config = config.copy()
@@ -314,13 +324,13 @@ with tab2:
                 updated_config["daily_schedule"] = sched_today
                 updated_config["tomorrow_schedule_date"] = tomorrow_str
                 updated_config["tomorrow_schedule"] = sched_tomorrow
-                updated_config["price_cap"] = p_cap
-                updated_config["min_on_blocks"] = m_blocks
-                updated_config["ai_latest_reasoning"] = reasoning
+                updated_config["price_cap"] = p_cap_today
+                updated_config["min_on_blocks"] = m_blocks_today
+                updated_config["ai_latest_reasoning"] = reasoning_today
 
                 save_config(updated_config)
                 st.cache_data.clear()
-                st.success("Scheman har beräknats om med AI och sparats!")
+                st.success("Scheman för både idag och imorgon har beräknats med separata AI-analyser och sparats!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Ett fel uppstod vid AI-omräkning: {e}")
