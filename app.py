@@ -182,8 +182,6 @@ with tab2:
     
     min_on_hours = st.slider("Minsta totala körtid per dygn (timmar)", min_value=4, max_value=24, value=int(config.get("min_on_blocks", 44) / 4), step=1)
     max_off_hours = st.slider("Maximal avstängning i rad (timmar)", min_value=1, max_value=6, value=int(config.get("max_off_blocks", 12) / 4), step=1)
-    price_cap = st.slider("Pristak (öre/kWh) – Standard / basvärde", min_value=10, max_value=150, value=int(config.get("price_cap", 50.0)), step=5)
-
     st.divider()
     st.subheader("2. Köldskydd & Utetemperatur")
     cold_temp_threshold = st.number_input("Gräns för kyla (°C)", min_value=-30, max_value=10, value=config.get("cold_temp_threshold", 0))
@@ -198,7 +196,6 @@ with tab2:
         new_config.update({
             "min_on_blocks": min_on_hours * 4,
             "max_off_blocks": max_off_hours * 4,
-            "price_cap": float(price_cap),
             "cold_temp_threshold": cold_temp_threshold,
             "min_minutes_cold": min_minutes_cold,
             "force_override": force_override
@@ -213,13 +210,13 @@ with tab2:
 
             prices_today = get_nordpool_price(zone="SE2", target_date=now)
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-            temp_forecast = get_hourly_temp_forecast()
+            temp_forecast = get_hourly_temp_forecast(target_date=now)
 
             p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
-                prices_today, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"], target_day_label="idag"
+                prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=new_config["min_on_blocks"], target_day_label="idag"
             )
             p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                prices_tomorrow, temp_forecast, default_price_cap=float(price_cap), default_min_on_blocks=new_config["min_on_blocks"], target_day_label="imorgon"
+                prices_tomorrow, temp_forecast, default_price_cap=50.0, default_min_on_blocks=new_config["min_on_blocks"], target_day_label="imorgon"
             )
 
             new_config["schedule_date"] = today_str
@@ -248,19 +245,18 @@ with tab2:
 
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
                 prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-                temp_forecast = get_hourly_temp_forecast()
+                temp_forecast = get_hourly_temp_forecast(target_date=now)
 
                 max_off = config.get("max_off_blocks", 12)
                 min_on = config.get("min_on_blocks", 44)
                 cold_th = config.get("cold_temp_threshold", 0)
                 min_mins = config.get("min_minutes_cold", 15)
-                base_pcap = config.get("price_cap", 50.0)
 
                 p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
-                    prices_today, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on, target_day_label="idag"
+                    prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
                 )
                 p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                    prices_tomorrow, temp_forecast, default_price_cap=base_pcap, default_min_on_blocks=min_on, target_day_label="imorgon"
+                    prices_tomorrow, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
                 )
 
                 updated_config = config.copy()
@@ -278,7 +274,6 @@ with tab2:
                 st.rerun()
             except Exception as e:
                 st.error(f"Ett fel uppstod: {e}")
-
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
     st.subheader("Planerat elschema, pris och temperaturprognos")
