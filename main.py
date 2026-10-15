@@ -98,7 +98,6 @@ def get_nordpool_price(zone="SE2", target_date=None):
     day = target_date.strftime("%d")
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
-    print(f"[DEBUG] Försöker hämta URL: {url}")
     
     try:
         res = requests.get(url, timeout=10)
@@ -115,12 +114,10 @@ def get_nordpool_price(zone="SE2", target_date=None):
     except Exception as e:
         print(f"[ERROR] Undantag vid hämtning av elpriser: {e}")
         
-    print(f"[WARNING] Kunde inte hämta priser för {target_date.strftime('%Y-%m-%d')}. Returnerar reservlista på 50 öre.")
     return [50.0] * 96
 
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
+# --- TEMPERATUR PROGNOS & FALLBACK (OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56):
-    """Hämtar timvis temperaturprognos för de kommande 24 timmarna (Ås/Östersund)."""
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm"
     try:
         res = requests.get(url, timeout=5)
@@ -131,26 +128,36 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56):
         print(f"[ERROR] Kunde inte hämta timprognos: {e}")
     return [0.0] * 24
 
-# --- TEMPERATUR.NU API (AKTUELL TEMP) ---
+# --- ROBUST TEMPERATURHÄMTNING (MED FALLBACK) ---
 def get_outside_temp():
     station = os.getenv("TEMPERATUR_NU_STATION", "ostersund")
-    url = f"http://www.temperatur.nu/termo/{station}/temp.txt"
+    url = f"http://temperatur.nu/termo/{station}/temp.txt"
     try:
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, timeout=4)
         if res.status_code == 200:
             temp_str = res.text.strip()
-            if temp_str.upper() == "N/A" or not temp_str:
-                return 0.0
-            return float(temp_str)
+            if temp_str.upper() != "N/A" and temp_str != "":
+                val = float(temp_str)
+                # Om temperatur.nu mot förmodan returnerar exakt 0.0 men det är osannolikt, eller om det är giltigt:
+                return val
     except Exception:
         pass
-    return 0.0
+    
+    # Fallback till Open-Meteo aktuell temperatur om temperatur.nu misslyckas
+    try:
+        lat, lon = 63.25, 14.56
+        url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
+        res_om = requests.get(url_om, timeout=4)
+        if res_om.status_code == 200:
+            return float(res_om.json()["current"]["temperature_2m"])
+    except Exception:
+        pass
+
+    return 5.0  # Absolut sista reserv om allt dör
 
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
-    """Skickar pris och timvis utetemperatur till Gemini AI för att få optimala styrparametrar för en specifik dag."""
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
-        print("[AI] Ingen GEMINI_API_KEY hittades eller Gemini-biblioteket saknas. Använder standardinställningar.")
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
 
     prompt = f"""
@@ -178,10 +185,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         raw_text = ""
         if GEMINI_AVAILABLE == "genai_new":
             client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
             raw_text = response.text
         elif GEMINI_AVAILABLE == "genai_old":
             genai_old.configure(api_key=GEMINI_API_KEY)
@@ -225,23 +229,17 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
     
-    # Målfunktion: Minimera totala kostnaden
     prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
-    
-    # Krav: Minsta totala antal körtimmar/block per dygn
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
-    # Max antal tillåtna avstängda block i rad
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
 
-    # Tvinga PÅ i optimeringen om priset är under pristaket
     if price_cap is not None:
         for i in range(96):
             if prices_96[i] <= price_cap:
                 prob += x[i] == 1
 
-    # Köldskyddsvillkor i optimeringen
     if current_temp <= cold_threshold and min_minutes_cold > 0:
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
         for hour in range(24):
@@ -255,8 +253,6 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
 # --- HUVUDLOGIK ---
 def main():
     try:
-        print("[DEBUG] Skriptet startar...")
-        print("Startar elstyrningskontroll...")
         config, history = load_gist_data()
         
         sweden_tz = ZoneInfo("Europe/Stockholm")
@@ -266,9 +262,20 @@ def main():
         tomorrow_dt = now + timedelta(days=1)
         tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
+        # --- SPÄRRLOGIK MOT DUBBELKÖRNING I STREAMLIT ---
+        # Om det har loggats en händelse för mindre än 8 minuter sedan hoppar vi över körning för att undvika spök-dubbletter
+        if history:
+            last_entry = history[-1]
+            try:
+                last_time = datetime.strptime(last_entry["timestamp"], "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
+                diff_minutes = (now - last_time).total_seconds() / 60
+                if diff_minutes < 8:
+                    return  # Avbryt direkt om det nyss kördes!
+            except Exception:
+                pass
+
         current_temp = get_outside_temp()
         
-        # Hämta sparade inställningar
         max_off = config.get("max_off_blocks", 12)
         min_on = config.get("min_on_blocks", 44)
         price_cap = config.get("price_cap", 50.0)
@@ -282,21 +289,17 @@ def main():
 
         if active_schedule_date != today_str:
             if tomorrow_schedule_date == today_str and tomorrow_schedule:
-                print("Nytt dygn: Flyttar över morgondagens förberäknade schema till aktivt schema!")
                 daily_schedule = tomorrow_schedule
                 active_schedule_date = today_str
                 config["tomorrow_schedule"] = None
                 config["tomorrow_schedule_date"] = None
             else:
-                print("Saknar giltigt schema för idag. Genererar nytt schema...")
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
                 temp_forecast = get_hourly_temp_forecast()
                 
-                # Kör AI-strategen för idag
                 p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
                     prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="idag"
                 )
-                print(f"[AI-BESLUT IDAG] {reasoning}")
                 
                 daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, current_temp=current_temp, price_cap=p_cap)
                 active_schedule_date = today_str
@@ -310,16 +313,13 @@ def main():
 
         # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN (EFTER KL 14) ---
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
-            print("Klockan är efter 14:00. Hämtar priser och väderprognos för morgondagen...")
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
             temp_forecast = get_hourly_temp_forecast()
             
             if len(set(prices_tomorrow)) > 1: 
-                print("Kör AI-strategen separat för morgondagen...")
                 p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
                     prices_tomorrow, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="imorgon"
                 )
-                print(f"[AI-BESLUT MORGONDAG] {reasoning_tom} | Pristak: {p_cap_tom} öre | Minsta körtid: {m_blocks_tom/4}h")
                 
                 new_tomorrow_sched = generate_daily_schedule(
                     prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
@@ -327,11 +327,10 @@ def main():
                 
                 config["tomorrow_schedule_date"] = tomorrow_str
                 config["tomorrow_schedule"] = new_tomorrow_sched
-                config["ai_latest_reasoning"] = reasoning_tom  # Spara morgondagens AI-analys direkt som synlig
+                config["ai_latest_reasoning"] = reasoning_tom
                 save_config_to_gist(config)
-                print("Morgondagens schema har beräknats med egen AI-analys och sparats!")
 
-        # --- 3. AVSLUTANDE DRIFTKÖRNING FÖR AKTUELL KVART ---
+        # --- 3. DRIFTKÖRNING FÖR AKTUELL KVART ---
         prices_today = get_nordpool_price(zone="SE2", target_date=now)
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
@@ -346,7 +345,6 @@ def main():
         else:
             if current_price <= price_cap:
                 should_be_on = True
-                print(f"[PRISTAK] Priset ({current_price} öre) understiger pristaket ({price_cap} öre). Tvingar PÅ.")
             else:
                 if daily_schedule and len(daily_schedule) == 96:
                     should_be_on = daily_schedule[quarter_index]
@@ -361,8 +359,6 @@ def main():
                     should_be_on = True
 
         status_str = "ON" if should_be_on else "OFF"
-        print(f"Pris: {current_price:.2f} öre/kWh | Temp: {current_temp}°C | Beslut: {status_str}")
-        
         set_tuya_switch(should_be_on)
         
         log_entry = {
@@ -375,8 +371,6 @@ def main():
         save_history(history)
     except Exception as e:
         print(f"[FATAL ERROR] Skriptet kraschade: {e}")
-        import traceback
-        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
