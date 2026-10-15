@@ -64,9 +64,7 @@ def save_config_to_gist(config_data):
     try:
         url = f"https://api.github.com/gists/{GIST_ID}"
         response = requests.patch(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            print("Konfigurationen har sparats till Gist!")
-        else:
+        if response.status_code != 200:
             print(f"[ERROR] Kunde inte spara config till Gist. Svar: {response.text}")
     except Exception as e:
         print(f"[ERROR] Fel vid sparande av config till Gist: {e}")
@@ -116,7 +114,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
         
     return [50.0] * 96
 
-# --- TEMPERATUR PROGNOS & FALLBACK (OPEN-METEO) ---
+# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm"
     try:
@@ -128,7 +126,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56):
         print(f"[ERROR] Kunde inte hämta timprognos: {e}")
     return [0.0] * 24
 
-# --- ROBUST TEMPERATURHÄMTNING (MED FALLBACK) ---
+# --- ROBUST TEMPERATURHÄMTNING ---
 def get_outside_temp():
     station = os.getenv("TEMPERATUR_NU_STATION", "ostersund")
     url = f"http://temperatur.nu/termo/{station}/temp.txt"
@@ -137,13 +135,10 @@ def get_outside_temp():
         if res.status_code == 200:
             temp_str = res.text.strip()
             if temp_str.upper() != "N/A" and temp_str != "":
-                val = float(temp_str)
-                # Om temperatur.nu mot förmodan returnerar exakt 0.0 men det är osannolikt, eller om det är giltigt:
-                return val
+                return float(temp_str)
     except Exception:
         pass
     
-    # Fallback till Open-Meteo aktuell temperatur om temperatur.nu misslyckas
     try:
         lat, lon = 63.25, 14.56
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
@@ -153,7 +148,7 @@ def get_outside_temp():
     except Exception:
         pass
 
-    return 5.0  # Absolut sista reserv om allt dör
+    return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
@@ -202,8 +197,13 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         
         return price_cap, min_on_blocks, motivering
     except Exception as e:
-        print(f"[AI ERROR] Fel vid anrop till Gemini API: {e}")
-        return default_price_cap, default_min_on_blocks, "Fallback använd på grund av API-fel."
+        error_msg = str(e)
+        print(f"[AI ERROR] Fel vid anrop till Gemini API: {error_msg}")
+        if "503" in error_msg or "UNAVAILABLE" in error_msg:
+            reasoning = "⚠️ Gemini är tillfälligt överbelastad (503). Använder standardvärden i avvaktan på nästa försök."
+        else:
+            reasoning = f"⚠️ AI-fel ({error_msg[:30]}...). Använder standardvärden."
+        return default_price_cap, default_min_on_blocks, reasoning
 
 # --- TUYA CLOUD STYRNING ---
 def set_tuya_switch(state: bool):
@@ -262,15 +262,12 @@ def main():
         tomorrow_dt = now + timedelta(days=1)
         tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
-        # --- SPÄRRLOGIK MOT DUBBELKÖRNING I STREAMLIT ---
-        # Om det har loggats en händelse för mindre än 8 minuter sedan hoppar vi över körning för att undvika spök-dubbletter
         if history:
             last_entry = history[-1]
             try:
                 last_time = datetime.strptime(last_entry["timestamp"], "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                diff_minutes = (now - last_time).total_seconds() / 60
-                if diff_minutes < 8:
-                    return  # Avbryt direkt om det nyss kördes!
+                if (now - last_time).total_seconds() / 60 < 8:
+                    return
             except Exception:
                 pass
 
@@ -280,7 +277,6 @@ def main():
         min_on = config.get("min_on_blocks", 44)
         price_cap = config.get("price_cap", 50.0)
 
-        # --- 1. SCHEMAHANTERING & DYGNSVÄXLING ---
         active_schedule_date = config.get("schedule_date")
         daily_schedule = config.get("daily_schedule")
         
@@ -311,7 +307,6 @@ def main():
             config["daily_schedule"] = daily_schedule
             save_config_to_gist(config)
 
-        # --- 2. FÖRHANDSBERÄKNING FÖR MORGONDAGEN (EFTER KL 14) ---
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
             temp_forecast = get_hourly_temp_forecast()
@@ -330,7 +325,6 @@ def main():
                 config["ai_latest_reasoning"] = reasoning_tom
                 save_config_to_gist(config)
 
-        # --- 3. DRIFTKÖRNING FÖR AKTUELL KVART ---
         prices_today = get_nordpool_price(zone="SE2", target_date=now)
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
