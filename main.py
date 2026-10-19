@@ -250,8 +250,10 @@ def set_tuya_switch(state: bool):
             apiSecret=TUYA_API_SECRET,
             devId=TUYA_DEVICE_ID
         )
-        commands = [{"code": "switch", "value": state}]
-        cloud.sendcommand(TUYA_DEVICE_ID, commands)
+        # Tuya kräver "commands" som en lista med objekt och rätt enhets-ID
+        commands = {"commands": [{"code": "switch", "value": state}]}
+        res = cloud.sendcommand(TUYA_DEVICE_ID, commands)
+        print(f"[TUYA SEND COMMAND RESULT]: {res}")
     except Exception as e:
         print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
 
