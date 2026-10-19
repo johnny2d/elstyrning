@@ -175,7 +175,7 @@ with tab1:
             ticktext=["AV 🔴", "PÅ 🟢"], range=[-0.2, 1.2], secondary_y=True
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         with st.expander("Visa rådata / logg"):
             st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), width='stretch')
     else:
@@ -386,7 +386,7 @@ with tab3:
     fig_view.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
     fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
 
-    st.plotly_chart(fig_view, use_container_width=True)
+    st.plotly_chart(fig_view, width='stretch')
 
     with st.expander("Visa tabell med samtliga kvartar"):
         st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')

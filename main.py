@@ -2,7 +2,7 @@ import os
 import json
 import pulp
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import tinytuya
 
