@@ -148,7 +148,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
 
 # --- TEMPERATUR.NU API (MED LUGNVIK-LÄNK) ---
 def get_outside_temp():
-    url = "https://www.temperatur.nu/jstemp.php?s=lugnvik"
+    url = "https://www.temperatur.nu/jstemp.php?s=as-sem"
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
