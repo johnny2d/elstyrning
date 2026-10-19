@@ -102,6 +102,10 @@ if config.get("ai_latest_reasoning"):
 
 tab1, tab2, tab3 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser"])
 
+with st.sidebar:
+    st.write("### Kontroller")
+    if st.button("🔄 Uppdatera sida"):
+        st.rerun()
 # --- TAB 1: HISTORIK OCH GRAFER ---
 with tab1:
     st.subheader("Senaste dygnets pris, temperatur och elementstatus")

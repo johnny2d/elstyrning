@@ -196,10 +196,11 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     
     Din uppgift är att analysera prisbilden och kylan för att bestämma två nyckelparametrar för just detta dygn:
     1. "price_cap": Pristak i öre/kWh (om priset understiger detta betraktas det som billigt och pannan ska köras).
-    2. "min_on_hours": Totalt antal timmar (mellan 6 och 20) som värmen absolut minst behöver vara igång under dygnet för att inte huset ska kyla ur givet utetemperaturen.
+    2. "min_on_hours": Totalt antal timmar som värmen absolut minst behöver vara igång under dygnet för att inte huset ska kyla ur.
 
-    Regler:
-    - Om det är kallare ute krävs fler timmar.
+    Regler och riktlinjer för körtid:
+    - Vid en dygnsmedeltemperatur kring 0 °C bör cirka 7 timmars total körtid räcka.
+    - Om det är kallare ute krävs fler timmar; om det är mildare kan det vara ännu färre.
     - Om priset har kraftiga dalar ska pristaket sättas så att vi nyttjar dalarna utan att bränna el på topparna.
     
     Svara ENBART med ett giltigt JSON-objekt enligt detta format:
