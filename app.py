@@ -177,7 +177,7 @@ with tab1:
 
         st.plotly_chart(fig, use_container_width=True)
         with st.expander("Visa rådata / logg"):
-            st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), use_container_width=True)
+            st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), width='stretch')
     else:
         st.info("Ingen historik har loggats än.")
 
@@ -389,4 +389,4 @@ with tab3:
     st.plotly_chart(fig_view, use_container_width=True)
 
     with st.expander("Visa tabell med samtliga kvartar"):
-        st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], use_container_width=True)
+        st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
