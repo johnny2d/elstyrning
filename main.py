@@ -115,9 +115,6 @@ def get_nordpool_price(zone="SE2", target_date=None):
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
     """Hämtar timvis temperaturprognos för ett specifikt datum genom att matcha mot tidsstämplarna."""
     sweden_tz = ZoneInfo("Europe/Stockholm")
@@ -135,24 +132,20 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
                 times = data["hourly"]["time"]
                 temps = data["hourly"]["temperature_2m"]
                 
-                # Plocka ut de 24 timmar som matchar det valda datumet
                 day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
                 
                 if len(day_temps) == 24:
                     return day_temps
                 elif len(day_temps) > 0:
-                    # Om det är ofullständigt, fyll ut eller kapa
                     while len(day_temps) < 24:
                         day_temps.append(day_temps[-1])
                     return day_temps[:24]
     except Exception as e:
         print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo: {e}")
     
-    # Reserv om anropet misslyckas
     current_t = get_outside_temp()
     return [current_t] * 24
 
-# --- ROBUST TEMPERATURHÄMTNING ---
 # --- TEMPERATUR.NU API (MED LUGNVIK-LÄNK) ---
 def get_outside_temp():
     url = "https://www.temperatur.nu/jstemp.php?s=lugnvik"
@@ -160,28 +153,22 @@ def get_outside_temp():
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             text = res.text.strip()
-            # Om sidan svarar med t.ex. ett JSON-objekt eller direkt ett nummer, rensa och parse:
-            # Temperatur.nu jstemp brukar ofta returnera JSON eller en sträng med temperaturen.
             try:
-                # Testa om det är JSON
                 data = res.json()
                 if "temp" in data:
                     return float(data["temp"])
             except Exception:
                 pass
             
-            # Om det är en ren textsträng eller innehåller siffror
             import re
             numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
             if numbers:
                 val = float(numbers[0])
-                # Sanity check: Om värdet är rimligt mellan -40 och +40
                 if -40 <= val <= 40:
                     return val
     except Exception as e:
         print(f"[ERROR] Kunde inte hämta temperatur från Lugnvik: {e}")
     
-    # Fallback till Open-Meteo om temperatur.nu skulle svika
     try:
         lat, lon = 63.25, 14.56
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
@@ -192,9 +179,6 @@ def get_outside_temp():
         pass
 
     return 5.0
-
-# --- AI STRATEGEN (GEMINI) ---
-import time
 
 # --- AI STRATEGEN (GEMINI) MED BÄTTRE KVOT- OCH FELHANTERING ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
@@ -255,21 +239,49 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
             
         return default_price_cap, default_min_on_blocks, reasoning
 
-# --- TUYA CLOUD STYRNING ---
+# --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_switch(state: bool):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         return
     try:
         cloud = tinytuya.Cloud(
-            apiEndpoint=f"https://openapi.tuya{TUYA_REGION}.com",
+            apiRegion=TUYA_REGION,
             apiKey=TUYA_API_KEY,
             apiSecret=TUYA_API_SECRET,
             devId=TUYA_DEVICE_ID
         )
-        commands = {"commands": [{"code": "switch_1", "value": state}]}
+        commands = [{"code": "switch", "value": state}]
         cloud.sendcommand(TUYA_DEVICE_ID, commands)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
+
+def get_tuya_device_status():
+    """Hämtar aktuell status från Tuya-enheten (ON/OFF) robust oavsett kodnamn."""
+    if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
+        return False, "OFF"
+
+    try:
+        cloud = tinytuya.Cloud(
+            apiRegion=TUYA_REGION,
+            apiKey=TUYA_API_KEY,
+            apiSecret=TUYA_API_SECRET,
+            devId=TUYA_DEVICE_ID
+        )
+        status_data = cloud.getstatus(TUYA_DEVICE_ID)
+
+        if status_data and status_data.get("success"):
+            result = status_data.get("result", [])
+            if isinstance(result, list):
+                for item in result:
+                    code = item.get("code", "")
+                    if "switch" in code.lower():
+                        is_on = item.get("value", False)
+                        return True, ("ON" if is_on else "OFF")
+            return True, "ON"
+    except Exception as e:
+        print(f"[TUYA STATUS ERROR]: {e}")
+    
+    return False, "OFF"
 
 # --- PULP OPTIMERINGSMOTOR ---
 def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15, price_cap=50.0):
@@ -299,49 +311,7 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
-import tinytuya
 
-# --- TUYA STYRNING ---
-def get_tuya_device_status():
-    """Hämtar aktuell status från Tuya-enheten (ON/OFF) robust oavsett kodnamn."""
-    api_key = os.getenv("TUYA_API_KEY") or st.secrets.get("TUYA_API_KEY")
-    api_secret = os.getenv("TUYA_API_SECRET") or st.secrets.get("TUYA_API_SECRET")
-    device_id = os.getenv("TUYA_DEVICE_ID") or st.secrets.get("TUYA_DEVICE_ID")
-    region = os.getenv("TUYA_REGION") or st.secrets.get("TUYA_REGION", "eu")
-
-    if not all([api_key, api_secret, device_id]):
-        return False, "⚠️ Tuya-nycklar saknas i secrets.toml."
-
-    try:
-        cloud = tinytuya.Cloud(
-            apiRegion=region,
-            apiKey=api_key,
-            apiSecret=api_secret,
-            devId=device_id
-        )
-        status_data = cloud.getstatus(device_id)
-        
-        # Debug-utskrift i konsolen för att se vad enheten faktiskt skickar
-        print(f"[TUYA STATUS DEBUG]: {status_data}")
-
-        if status_data and status_data.get("success"):
-            result = status_data.get("result", [])
-            
-            # Om resultat är en lista (t.ex. statusar)
-            if isinstance(result, list):
-                for item in result:
-                    code = item.get("code", "")
-                    if "switch" in code.lower():
-                        is_on = item.get("value", False)
-                        return True, f"{'PÅ' if is_on else 'AV'}"
-            
-            # Alternativt om resultat är ett objekt eller om vi kollar funktioner
-            return True, "Ansluten (Status okänd kod)"
-        else:
-            msg = status_data.get("msg", "Okänt fel")
-            return False, f"Fel: {msg}"
-    except Exception as e:
-        return False, f"Fel: {e}"
 # --- HUVUDLOGIK ---
 def main():
     try:
@@ -406,29 +376,10 @@ def main():
             temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
             
             if len(set(prices_tomorrow)) > 1: 
-                # Liten paus för att undvika 429-kvotspik om den körs nära dygnsbytet
                 time.sleep(2)
                 
                 p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
                     prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
-                )
-                
-                new_tomorrow_sched = generate_daily_schedule(
-                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
-                )
-                
-                config["tomorrow_schedule_date"] = tomorrow_str
-                config["tomorrow_schedule"] = new_tomorrow_sched
-                config["ai_latest_reasoning"] = reasoning_tom
-                save_config_to_gist(config)
-
-        if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
-            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-            temp_forecast = get_hourly_temp_forecast()
-            
-            if len(set(prices_tomorrow)) > 1: 
-                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                    prices_tomorrow, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="imorgon"
                 )
                 
                 new_tomorrow_sched = generate_daily_schedule(
@@ -467,13 +418,16 @@ def main():
                 if now.minute < min_mins_cold:
                     should_be_on = True
 
-        status_str = "ON" if should_be_on else "OFF"
+        # Skicka kommandot till Tuya
         set_tuya_switch(should_be_on)
+        
+        # Läs av den faktiska statusen från Tuya efter kommandot för att säkerställa att det gick igenom
+        _, actual_tuya_status = get_tuya_device_status()
         
         log_entry = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M"),
             "price": round(current_price, 2),
-            "status": status_str,
+            "status": actual_tuya_status,  # Sparar den bekräftade statusen här
             "temp": round(current_temp, 1)
         }
         history.append(log_entry)
