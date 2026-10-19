@@ -320,6 +320,8 @@ def get_tuya_device_status():
             devId=device_id
         )
         status_data = cloud.getstatus(device_id)
+
+        print(f"Rått svar från Tuya Cloud: {status_data}")
         
         # Debug-utskrift i konsolen för att se vad enheten faktiskt skickar
         print(f"[TUYA STATUS DEBUG]: {status_data}")
