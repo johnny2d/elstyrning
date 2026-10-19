@@ -18,6 +18,7 @@ if hasattr(st, "secrets"):
         os.environ["GIST_TOKEN"] = st.secrets["GIST_TOKEN"]
 
 from main import (
+    get_tuya_device_status,
     main, 
     generate_daily_schedule, 
     get_nordpool_price, 
@@ -175,6 +176,23 @@ with tab1:
             st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), use_container_width=True)
     else:
         st.info("Ingen historik har loggats än.")
+
+  
+    st.header("📊 Övervakning & Status")
+    
+    # Hämta och visa Tuya-status
+    tuya_connected, tuya_msg = get_tuya_device_status()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Aktivt Pristak", f"{config.get('price_cap', 50):.1f} öre")
+    with col2:
+        st.metric("Utetemperatur", f"{get_outside_temp():.1f} °C")
+    with col3:
+        st.metric("Tuya Relästatus", tuya_msg)
+
+    if not tuya_connected:
+        st.warning(f"Tuya-status: {tuya_msg}")
 
 # --- TAB 2: INSTÄLLNINGAR ---
 with tab2:

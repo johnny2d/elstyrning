@@ -194,6 +194,9 @@ def get_outside_temp():
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
+import time
+
+# --- AI STRATEGEN (GEMINI) MED BÄTTRE KVOT- OCH FELHANTERING ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
@@ -242,10 +245,14 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     except Exception as e:
         error_msg = str(e)
         print(f"[AI ERROR] Fel vid anrop till Gemini API: {error_msg}")
-        if "503" in error_msg or "UNAVAILABLE" in error_msg:
-            reasoning = "⚠️ Gemini är tillfälligt överbelastad (503). Använder standardvärden i avvaktan på nästa försök."
+        
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            reasoning = "⚠️ API-kvoten för Gemini är tillfälligt slut (429). Använder standardvärden."
+        elif "503" in error_msg or "UNAVAILABLE" in error_msg:
+            reasoning = "⚠️ Gemini är tillfälligt överbelastad (503). Använder standardvärden."
         else:
             reasoning = f"⚠️ AI-fel ({error_msg[:30]}...). Använder standardvärden."
+            
         return default_price_cap, default_min_on_blocks, reasoning
 
 # --- TUYA CLOUD STYRNING ---
@@ -292,7 +299,41 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
+import tinytuya
 
+# --- TUYA STYRNING ---
+def get_tuya_device_status():
+    """Hämtar aktuell status från Tuya-enheten (ON/OFF) samt anslutningsstatus."""
+    api_key = os.getenv("TUYA_API_KEY") or st.secrets.get("TUYA_API_KEY")
+    api_secret = os.getenv("TUYA_API_SECRET") or st.secrets.get("TUYA_API_SECRET")
+    device_id = os.getenv("TUYA_DEVICE_ID") or st.secrets.get("TUYA_DEVICE_ID")
+    region = os.getenv("TUYA_REGION") or st.secrets.get("TUYA_REGION", "eu")
+
+    if not all([api_key, api_secret, device_id]):
+        return False, "⚠️ Tuya-nycklar saknas i secrets.toml."
+
+    try:
+        cloud = tinytuya.Cloud(
+            apiRegion=region,
+            apiKey=api_key,
+            apiSecret=api_secret,
+            devId=device_id
+        )
+        # Hämta enhetsstatus från Tuya Cloud
+        status_data = cloud.getstatus(device_id)
+        if status_data and status_data.get("success"):
+            # Leta efter strömbrytarstatus (oftast 'switch_1' eller 'switch')
+            result = status_data.get("result", [])
+            for item in result:
+                if "switch" in item.get("code", ""):
+                    is_on = item.get("value", False)
+                    return True, f"🟢 Ansluten (Relä är {'PÅ' if is_on else 'AV'})"
+            return True, "🟢 Ansluten (Status erhållen)"
+        else:
+            msg = status_data.get("msg", "Okänt fel vid Tuya-uppkoppling.")
+            return False, f"🔴 Tuya-fel: {msg}"
+    except Exception as e:
+        return False, f"🔴 Anslutningsfel: {e}"
 # --- HUVUDLOGIK ---
 def main():
     try:
@@ -326,6 +367,7 @@ def main():
         tomorrow_schedule_date = config.get("tomorrow_schedule_date")
         tomorrow_schedule = config.get("tomorrow_schedule")
 
+        # 1. Hämta schema för IDAG om det saknas
         if active_schedule_date != today_str:
             if tomorrow_schedule_date == today_str and tomorrow_schedule:
                 daily_schedule = tomorrow_schedule
@@ -334,10 +376,10 @@ def main():
                 config["tomorrow_schedule_date"] = None
             else:
                 prices_today = get_nordpool_price(zone="SE2", target_date=now)
-                temp_forecast = get_hourly_temp_forecast()
+                temp_forecast = get_hourly_temp_forecast(target_date=now)
                 
                 p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
-                    prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label="idag"
+                    prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
                 )
                 
                 daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, current_temp=current_temp, price_cap=p_cap)
@@ -349,6 +391,28 @@ def main():
             config["schedule_date"] = active_schedule_date
             config["daily_schedule"] = daily_schedule
             save_config_to_gist(config)
+
+        # 2. Hämta schema för IMORGON (endast efter kl 14 om det saknas)
+        if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
+            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+            temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
+            
+            if len(set(prices_tomorrow)) > 1: 
+                # Liten paus för att undvika 429-kvotspik om den körs nära dygnsbytet
+                time.sleep(2)
+                
+                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                    prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
+                )
+                
+                new_tomorrow_sched = generate_daily_schedule(
+                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                )
+                
+                config["tomorrow_schedule_date"] = tomorrow_str
+                config["tomorrow_schedule"] = new_tomorrow_sched
+                config["ai_latest_reasoning"] = reasoning_tom
+                save_config_to_gist(config)
 
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
