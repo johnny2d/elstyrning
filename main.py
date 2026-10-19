@@ -250,13 +250,19 @@ def set_tuya_switch(state: bool):
             apiSecret=TUYA_API_SECRET,
             devId=TUYA_DEVICE_ID
         )
-        # Tuya kräver "commands" som en lista med objekt och rätt enhets-ID
-        commands = {"commands": [{"code": "switch", "value": state}]}
-        res = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-        print(f"[TUYA SEND COMMAND RESULT]: {res}")
+        # Tuya Cloud API förväntar sig en lista med kommandoobjekt i "commands"
+        commands = {
+            "commands": [
+                {
+                    "code": "switch",
+                    "value": state
+                }
+            ]
+        }
+        response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
+        print(f"[TUYA SEND COMMAND RESULT]: {response}")
     except Exception as e:
         print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
-
 def get_tuya_device_status():
     """Hämtar aktuell status från Tuya-enheten (ON/OFF) robust oavsett kodnamn."""
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
@@ -313,50 +319,6 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) for i in range(96)]
-
-# --- TUYA STYRNING ---
-def get_tuya_device_status():
-    """Hämtar aktuell status från Tuya-enheten (ON/OFF) robust oavsett kodnamn."""
-    api_key = os.getenv("TUYA_API_KEY") or st.secrets.get("TUYA_API_KEY")
-    api_secret = os.getenv("TUYA_API_SECRET") or st.secrets.get("TUYA_API_SECRET")
-    device_id = os.getenv("TUYA_DEVICE_ID") or st.secrets.get("TUYA_DEVICE_ID")
-    region = os.getenv("TUYA_REGION") or st.secrets.get("TUYA_REGION", "eu")
-
-    if not all([api_key, api_secret, device_id]):
-        return False, "⚠️ Tuya-nycklar saknas i secrets.toml."
-
-    try:
-        cloud = tinytuya.Cloud(
-            apiRegion=region,
-            apiKey=api_key,
-            apiSecret=api_secret,
-            devId=device_id
-        )
-        status_data = cloud.getstatus(device_id)
-
-        print(f"Rått svar från Tuya Cloud: {status_data}")
-        
-        # Debug-utskrift i konsolen för att se vad enheten faktiskt skickar
-        print(f"[TUYA STATUS DEBUG]: {status_data}")
-
-        if status_data and status_data.get("success"):
-            result = status_data.get("result", [])
-            
-            # Om resultat är en lista (t.ex. statusar)
-            if isinstance(result, list):
-                for item in result:
-                    code = item.get("code", "")
-                    if "switch" in code.lower():
-                        is_on = item.get("value", False)
-                        return True, f"{'PÅ' if is_on else 'AV'}"
-            
-            # Alternativt om resultat är ett objekt eller om vi kollar funktioner
-            return True, "Ansluten (Status okänd kod)"
-        else:
-            msg = status_data.get("msg", "Okänt fel")
-            return False, f"Fel: {msg}"
-    except Exception as e:
-        return False, f"Fel: {e}"
 
 # --- HUVUDLOGIK ---
 def main():
