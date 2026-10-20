@@ -309,24 +309,52 @@ def get_tuya_device_status():
     return False, "OFF"
 
 # --- PULP OPTIMERINGSMOTOR ---
-def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, current_temp=15.0, cold_threshold=5.0, min_minutes_cold=15, price_cap=50.0):
+import pulp
+
+def generate_daily_schedule(
+    prices_96, 
+    max_off_blocks=8,          # Standard: max 2 timmar avstängt i rad
+    min_on_blocks=28,         # Standard: min 7 timmar körtid totalt
+    current_temp=15.0, 
+    cold_threshold=5.0, 
+    min_minutes_cold=15, 
+    price_cap=50.0
+):
     if not prices_96 or len(prices_96) != 96:
-        raise ValueError("Måste skicka in exakt 96 kvartsspriser.")
+        raise ValueError("Måste skicka in exakt 96 kvartspriser.")
 
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
     
-    prob += pulp.lpSum([x[i] * prices_96[i] for i in range(96)])
+    # 1. Målfunktion: Minimera kostnaden, men ge bonus/prioritet åt priser under price_cap
+    costs = []
+    for i in range(96):
+        price = prices_96[i]
+        # Om priset är under price_cap drar vi av en liten bonus i målfunktionen 
+        # för att uppmuntra körtid utan att låsa problemet med hårda tvång
+        effective_cost = price - 50.0 if (price_cap is not None and price <= price_cap) else price
+        costs.append(x[i] * effective_cost)
+    prob += pulp.lpSum(costs)
+
+    # 2. Krav på minsta totala körtid under dygnet
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
+    # 3. Hårt villkor: Max antal avstängda kvartar i rad (t.ex. 8 kvartar = 2 timmar)
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
 
-    if price_cap is not None:
-        for i in range(96):
-            if prices_96[i] <= price_cap:
-                prob += x[i] == 1
+    # 4. ÅTERHÄMTNINGSREGEL (Prioritera värme vid kraftigt prisras efter en topp):
+    # Om priset sjunker med mer än 30 % eller > 30 öre jämfört med 1 timme tidigare (4 kvartar sedan)
+    for i in range(4, 96):
+        prev_price = prices_96[i - 4]
+        curr_price = prices_96[i]
+        if prev_price > 60.0 and (curr_price <= prev_price * 0.70 or (prev_price - curr_price) >= 30.0):
+            # Tvinga på värmen i 4 kvartar (1 timme) framåt från prisfallet
+            end_slot = min(96, i + 4)
+            for j in range(i, end_slot):
+                prob += x[j] == 1
 
+    # 5. Köldskyddsregel per timme vid låga utetemperaturer
     if current_temp <= cold_threshold and min_minutes_cold > 0:
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
         for hour in range(24):
@@ -335,7 +363,9 @@ def generate_daily_schedule(prices_96, max_off_blocks=12, min_on_blocks=44, curr
             prob += pulp.lpSum([x[j] for j in range(start_slot, end_slot)]) >= blocks_per_hour_required
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    return [bool(x[i].varValue) for i in range(96)]
+    
+    # Returnera lösningen som en lista med booleans (True/False)
+    return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
 
 # --- HUVUDLOGIK ---
 def main():
