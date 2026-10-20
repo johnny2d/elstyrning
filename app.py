@@ -106,6 +106,7 @@ with st.sidebar:
     st.write("### Kontroller")
     if st.button("🔄 Uppdatera sida"):
         st.rerun()
+
 # --- TAB 1: HISTORIK OCH GRAFER ---
 with tab1:
     st.subheader("Senaste dygnets pris, temperatur och elementstatus")
@@ -181,7 +182,7 @@ with tab1:
     else:
         st.info("Ingen historik har loggats än.")
 
-  
+ 
     st.header("📊 Övervakning & Status")
     
     # Hämta och visa Tuya-status
@@ -296,6 +297,7 @@ with tab2:
                 st.rerun()
             except Exception as e:
                 st.error(f"Ett fel uppstod: {e}")
+
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
     st.subheader("Planerat elschema, pris och temperaturprognos")
@@ -342,6 +344,41 @@ with tab3:
         "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
         "status_num": [1 if s else 0 for s in schedule[:len(times)]]
     })
+
+    # --- RÄKNA UT SNITTPRISER OCH BESPARING (KPI:er) ---
+    dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
+    pa_mask = df_view["status_num"] == 1
+
+    if pa_mask.any():
+        valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
+        besparing_pct = ((dygn_snittpris - valda_snittpris) / dygn_snittpris) * 100 if dygn_snittpris > 0 else 0.0
+    else:
+        valda_snittpris = 0.0
+        besparing_pct = 0.0
+
+    # Visa tre kolumner med nyckeltal
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            label="Dygnets snittpris",
+            value=f"{dygn_snittpris:.1f} öre"
+        )
+    with col2:
+        diff = dygn_snittpris - valda_snittpris
+        st.metric(
+            label="Snittpris vid körtid (PÅ)",
+            value=f"{valda_snittpris:.1f} öre",
+            delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
+            delta_color="normal" if diff >= 0 else "inverse"
+        )
+    with col3:
+        st.metric(
+            label="Optimeringseffekt",
+            value=f"{besparing_pct:.1f}% billigare",
+            help="Hur mycket lägre ditt körsnittpris är jämfört med om värmen kört jämnt över hela dygnet."
+        )
+
+    st.divider()
 
     fig_view = make_subplots(specs=[[{"secondary_y": True}]])
     status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
@@ -390,3 +427,4 @@ with tab3:
 
     with st.expander("Visa tabell med samtliga kvartar"):
         st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
+        
