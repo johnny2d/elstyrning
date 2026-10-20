@@ -117,13 +117,34 @@ with tab1:
         df['status_num'] = df['status'].apply(lambda x: 1 if x == 'ON' else 0)
         
         latest = df.iloc[-1]
+        
+        # --- NYCKELTAL FÖR HISTORIK ---
+        hist_snitt = df['price'].mean()
+        hist_on_mask = df['status'] == 'ON'
+        hist_on_snitt = df.loc[hist_on_mask, 'price'].mean() if hist_on_mask.any() else 0.0
+        hist_diff = hist_snitt - hist_on_snitt
+        hist_effekt = ((hist_snitt - hist_on_snitt) / hist_snitt * 100) if hist_snitt > 0 else 0.0
+
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Aktuellt pris", f"{latest.get('price', 0):.2f} öre/kWh")
         col2.metric("Elementstatus", "PÅ 🟢" if latest.get('status') == 'ON' else "AV 🔴")
         col3.metric("Utetemperatur", f"{latest.get('temp', 0):.1f} °C")
         col4.metric("Senast uppdaterad", latest['time'].strftime('%H:%M'))
 
-        # Skapa graf med dubbla y-axlar (vänster: pris, höger: status) och overlay för temperatur
+        # Extra rad med utfall/besparing för historik
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("Historiskt snittpris", f"{hist_snitt:.1f} öre")
+        kpi2.metric(
+            "Snittpris vid aktiv körtid", 
+            f"{hist_on_snitt:.1f} öre", 
+            delta=f"-{hist_diff:.1f} öre" if hist_diff >= 0 else f"+{abs(hist_diff):.1f} öre",
+            delta_color="normal" if hist_diff >= 0 else "inverse"
+        )
+        kpi3.metric("Uppmätt optimeringseffekt", f"{hist_effekt:.1f}% billigare")
+
+        st.divider()
+
+        # Skapa graf med dubbla y-axlar
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
         
@@ -152,7 +173,7 @@ with tab1:
             secondary_y=False
         )
 
-        # 3. Utetemperatur (vänster axel med egen linje)
+        # 3. Utetemperatur (vänster axel)
         fig.add_trace(
             go.Scatter(
                 x=df['time'], y=df['temp'],
@@ -182,10 +203,9 @@ with tab1:
     else:
         st.info("Ingen historik har loggats än.")
 
- 
+    st.divider()
     st.header("📊 Övervakning & Status")
     
-    # Hämta och visa Tuya-status
     tuya_connected, tuya_msg = get_tuya_device_status()
     
     col1, col2, col3 = st.columns(3)
@@ -311,9 +331,8 @@ with tab3:
 
     target_dt = now if "Idag" in selected_day_tab else tomorrow_dt
     prices = get_nordpool_price(zone="SE2", target_date=target_dt)
-    temp_forecast = get_hourly_temp_forecast(target_date=target_dt) # Skicka med target_date!
+    temp_forecast = get_hourly_temp_forecast(target_date=target_dt)
 
-    # Mappa 24 timmars temperatur till 96 kvartar för grafen
     temp_96 = []
     for t_val in temp_forecast:
         temp_96.extend([t_val] * 4)
@@ -345,7 +364,7 @@ with tab3:
         "status_num": [1 if s else 0 for s in schedule[:len(times)]]
     })
 
-    # --- RÄKNA UT SNITTPRISER OCH BESPARING (KPI:er) ---
+    # --- KPI-BERÄKNING FÖR SCHEMAT (Anpassas automatiskt efter Idag/Imorgon) ---
     dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
     pa_mask = df_view["status_num"] == 1
 
@@ -356,7 +375,6 @@ with tab3:
         valda_snittpris = 0.0
         besparing_pct = 0.0
 
-    # Visa tre kolumner med nyckeltal
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(
@@ -383,7 +401,6 @@ with tab3:
     fig_view = make_subplots(specs=[[{"secondary_y": True}]])
     status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
     
-    # Status (höger axel)
     fig_view.add_trace(
         go.Scatter(
             x=df_view["Tid"], y=df_view["status_num"],
@@ -394,7 +411,6 @@ with tab3:
         secondary_y=True
     )
 
-    # Elpris (vänster axel)
     fig_view.add_trace(
         go.Scatter(
             x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
@@ -404,7 +420,6 @@ with tab3:
         secondary_y=False
     )
 
-    # Temperaturprognos (vänster axel)
     fig_view.add_trace(
         go.Scatter(
             x=df_view["Tid"], y=df_view["Temperatur (°C)"],
@@ -427,4 +442,3 @@ with tab3:
 
     with st.expander("Visa tabell med samtliga kvartar"):
         st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
-        
