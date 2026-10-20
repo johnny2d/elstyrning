@@ -182,6 +182,9 @@ def get_outside_temp():
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) MED BÄTTRE KVOT- OCH FELHANTERING ---
+import time
+import json
+
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
@@ -208,38 +211,50 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring på 1-2 meningar>"}}
     """
 
-    try:
-        raw_text = ""
-        if GEMINI_AVAILABLE == "genai_new":
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-            raw_text = response.text
-        elif GEMINI_AVAILABLE == "genai_old":
-            genai_old.configure(api_key=GEMINI_API_KEY)
-            model = genai_old.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            raw_text = response.text
+    max_retries = 3
+    retry_delay = 10  # sekunder för första återförsöket
 
-        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_json)
-        
-        price_cap = float(data.get("price_cap", default_price_cap))
-        min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
-        motivering = data.get("motivering", "AI-beräkning utförd.")
-        
-        return price_cap, min_on_blocks, motivering
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[AI ERROR] Fel vid anrop till Gemini API: {error_msg}")
-        
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            reasoning = "⚠️ API-kvoten för Gemini är tillfälligt slut (429). Använder standardvärden."
-        elif "503" in error_msg or "UNAVAILABLE" in error_msg:
-            reasoning = "⚠️ Gemini är tillfälligt överbelastad (503). Använder standardvärden."
-        else:
-            reasoning = f"⚠️ AI-fel ({error_msg[:30]}...). Använder standardvärden."
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw_text = ""
+            if GEMINI_AVAILABLE == "genai_new":
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                raw_text = response.text
+            elif GEMINI_AVAILABLE == "genai_old":
+                genai_old.configure(api_key=GEMINI_API_KEY)
+                model = genai_old.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt)
+                raw_text = response.text
+
+            clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
             
-        return default_price_cap, default_min_on_blocks, reasoning
+            price_cap = float(data.get("price_cap", default_price_cap))
+            min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
+            motivering = data.get("motivering", "AI-beräkning utförd.")
+            
+            return price_cap, min_on_blocks, motivering
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[AI ERROR] Försök {attempt}/{max_retries} misslyckades: {error_msg}")
+            
+            # Om vi har kvar försök, vänta och försök igen vid överbelastning eller kvotfel
+            if attempt < max_retries:
+                print(f"[AI RETRY] Väntar {retry_delay} sekunder innan nästa försök...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Öka väntetiden till nästa försök (10s -> 20s)
+            else:
+                # Sista försöket misslyckades – tillämpa fallback
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    reasoning = "⚠️ API-kvoten för Gemini är tillfälligt slut (429) efter upprepade försök. Använder standardvärden."
+                elif "503" in error_msg or "UNAVAILABLE" in error_msg:
+                    reasoning = "⚠️ Gemini var överbelastad (503) efter upprepade försök. Använder standardvärden."
+                else:
+                    reasoning = f"⚠️ AI-fel ({error_msg[:30]}...) efter upprepade försök. Använder standardvärden."
+                    
+                return default_price_cap, default_min_on_blocks, reasoning
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_switch(state: bool):
