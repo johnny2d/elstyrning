@@ -346,15 +346,15 @@ def generate_daily_schedule(
     # 3b. Förhindra ensamma 15-minutersprickar (kräv minst 2 sammanhängande kvartar = 30 min)
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
-        
+
     # 4. ÅTERHÄMTNINGSREGEL (Prioritera värme vid kraftigt prisras efter en topp):
     # Om priset sjunker med mer än 30 % eller > 30 öre jämfört med 1 timme tidigare (4 kvartar sedan)
     for i in range(4, 96):
         prev_price = prices_96[i - 4]
         curr_price = prices_96[i]
         if prev_price > 60.0 and (curr_price <= prev_price * 0.70 or (prev_price - curr_price) >= 30.0):
-            # Tvinga på värmen i 4 kvartar (1 timme) framåt från prisfallet
-            end_slot = min(96, i + 4)
+            # Tvinga på värmen i 3 kvartar (1 timme) framåt från prisfallet
+            end_slot = min(96, i + 3)
             for j in range(i, end_slot):
                 prob += x[j] == 1
 
