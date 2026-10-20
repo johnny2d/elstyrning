@@ -343,6 +343,10 @@ def generate_daily_schedule(
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
 
+    # 3b. Förhindra ensamma 15-minutersprickar (kräv minst 2 sammanhängande kvartar = 30 min)
+    for i in range(1, 95):
+        prob += x[i] <= x[i - 1] + x[i + 1]
+        
     # 4. ÅTERHÄMTNINGSREGEL (Prioritera värme vid kraftigt prisras efter en topp):
     # Om priset sjunker med mer än 30 % eller > 30 öre jämfört med 1 timme tidigare (4 kvartar sedan)
     for i in range(4, 96):
