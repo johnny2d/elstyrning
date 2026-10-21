@@ -254,7 +254,6 @@ def set_tuya_switch(state: bool):
             devId=TUYA_DEVICE_ID
         )
         
-        # Prova både 'switch' och 'switch_1' för att säkerställa kompatibilitet
         for code_name in ["switch", "switch_1"]:
             commands = {
                 "commands": [
@@ -265,7 +264,7 @@ def set_tuya_switch(state: bool):
                 ]
             }
             response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-            print(f"[TUYA SEND COMMAND ({code_name})]: state={state}, response={response}")
+            print(f"[TUYA CMD ({code_name})]: state={state}, success={response.get('success') if response else False}")
             
             if response and response.get("success"):
                 break
@@ -285,7 +284,7 @@ def get_tuya_device_status():
             devId=TUYA_DEVICE_ID
         )
         status_data = cloud.getstatus(TUYA_DEVICE_ID)
-        print(f"[TUYA STATUS RAW]: {status_data}")
+        # (Rensat bort den stora [TUYA STATUS RAW]-utskriften som spammade konsolen)
 
         if status_data and status_data.get("success"):
             result = status_data.get("result", [])
@@ -461,16 +460,19 @@ def main():
 
         print(f"[STYRLED] Tid: {now.strftime('%H:%M')} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
+        # Skicka kommando till reläet
         set_tuya_switch(should_be_on)
-        time.sleep(2.5)
-        _, actual_tuya_status = get_tuya_device_status()
-        # Om avläsningen inte hann med, använd det vi faktiskt skickade som sanning
-        target_status_str = "ON" if should_be_on else "OFF"
-        final_status = actual_tuya_status if actual_tuya_status in ["ON", "OFF"] else target_status_str
+        
+        # Ge Tuya-molnet 5 sekund att synka
+        time.sleep(5)
+        
+        # Sätt status baserat på vad vi skickade (för att slippa att molnet släpar efter i loggen)
+        final_status = "ON" if should_be_on else "OFF"
+        
         log_entry = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M"),
             "price": round(current_price, 2),
-            "status": actual_tuya_status,
+            "status": final_status,
             "temp": round(current_temp, 1),
             "reason": reason
         }
