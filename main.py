@@ -264,14 +264,15 @@ def set_tuya_switch(state: bool):
                 ]
             }
             response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-            print(f"[TUYA CMD ({code_name})]: state={state}, success={response.get('success') if response else False}")
+            print(f"[TUYA CMD ({code_name})]: state={state}, response={response}")
             
-            if response and response.get("success"):
+            # Anse det som framgångsrikt om vi får ett svar som inte är tomt eller om result är True
+            if response and (response.get("success") is True or response.get("result") is True):
                 break
                 
     except Exception as e:
         print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
-
+        
 def get_tuya_device_status():
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         return False, "OFF"
