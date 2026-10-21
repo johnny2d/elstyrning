@@ -118,7 +118,6 @@ with tab1:
         
         latest = df.iloc[-1]
         
-        # --- NYCKELTAL FÖR HISTORIK ---
         hist_snitt = df['price'].mean()
         hist_on_mask = df['status'] == 'ON'
         hist_on_snitt = df.loc[hist_on_mask, 'price'].mean() if hist_on_mask.any() else 0.0
@@ -131,7 +130,6 @@ with tab1:
         col3.metric("Utetemperatur", f"{latest.get('temp', 0):.1f} °C")
         col4.metric("Senast uppdaterad", latest['time'].strftime('%H:%M'))
 
-        # Extra rad med utfall/besparing för historik
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("Historiskt snittpris", f"{hist_snitt:.1f} öre")
         kpi2.metric(
@@ -144,11 +142,9 @@ with tab1:
 
         st.divider()
 
-        # Skapa graf med dubbla y-axlar
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
         
-        # 1. Status (höger axel)
         fig.add_trace(
             go.Scatter(
                 x=df['time'], y=df['status_num'],
@@ -161,7 +157,6 @@ with tab1:
             secondary_y=True
         )
 
-        # 2. Elpris (vänster axel)
         fig.add_trace(
             go.Scatter(
                 x=df['time'], y=df['price'],
@@ -173,7 +168,6 @@ with tab1:
             secondary_y=False
         )
 
-        # 3. Utetemperatur (vänster axel)
         fig.add_trace(
             go.Scatter(
                 x=df['time'], y=df['temp'],
@@ -198,8 +192,10 @@ with tab1:
         )
 
         st.plotly_chart(fig, width='stretch')
-        with st.expander("Visa rådata / logg"):
-            st.dataframe(df[['timestamp', 'price', 'status', 'temp']].sort_values(by='timestamp', ascending=False), width='stretch')
+        
+        with st.expander("Visa rådata / logg med orsaker"):
+            cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'reason'] if c in df.columns]
+            st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width='stretch')
     else:
         st.info("Ingen historik har loggats än.")
 
@@ -276,48 +272,6 @@ with tab2:
         st.cache_data.clear()
         st.rerun()
 
-    st.divider()
-    if st.button("🔄 Forcera omräkning med AI nu"):
-        with st.spinner("Hämtar priser och väderprognos för idag och imorgon..."):
-            try:
-                now = datetime.now(sweden_tz)
-                today_str = now.strftime("%Y-%m-%d")
-                tomorrow_dt = now + timedelta(days=1)
-                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
-                current_temp = get_outside_temp()
-
-                prices_today = get_nordpool_price(zone="SE2", target_date=now)
-                prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-                temp_forecast = get_hourly_temp_forecast(target_date=now)
-
-                max_off = config.get("max_off_blocks", 12)
-                min_on = config.get("min_on_blocks", 44)
-                cold_th = config.get("cold_temp_threshold", 0)
-                min_mins = config.get("min_minutes_cold", 15)
-
-                p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
-                    prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
-                )
-                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                    prices_tomorrow, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
-                )
-
-                updated_config = config.copy()
-                updated_config["schedule_date"] = today_str
-                updated_config["daily_schedule"] = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_today)
-                updated_config["tomorrow_schedule_date"] = tomorrow_str
-                updated_config["tomorrow_schedule"] = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_tom)
-                updated_config["price_cap"] = p_cap_today
-                updated_config["min_on_blocks"] = m_blocks_today
-                updated_config["ai_latest_reasoning"] = reasoning_today
-
-                save_config(updated_config)
-                st.cache_data.clear()
-                st.success("Scheman och AI-analyser för både idag och imorgon har uppdaterats!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Ett fel uppstod: {e}")
-
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
     st.subheader("Planerat elschema, pris och temperaturprognos")
@@ -364,7 +318,6 @@ with tab3:
         "status_num": [1 if s else 0 for s in schedule[:len(times)]]
     })
 
-    # --- KPI-BERÄKNING FÖR SCHEMAT (Anpassas automatiskt efter Idag/Imorgon) ---
     dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
     pa_mask = df_view["status_num"] == 1
 
@@ -377,10 +330,7 @@ with tab3:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric(
-            label="Dygnets snittpris",
-            value=f"{dygn_snittpris:.1f} öre"
-        )
+        st.metric(label="Dygnets snittpris", value=f"{dygn_snittpris:.1f} öre")
     with col2:
         diff = dygn_snittpris - valda_snittpris
         st.metric(
@@ -390,11 +340,7 @@ with tab3:
             delta_color="normal" if diff >= 0 else "inverse"
         )
     with col3:
-        st.metric(
-            label="Optimeringseffekt",
-            value=f"{besparing_pct:.1f}% billigare",
-            help="Hur mycket lägre ditt körsnittpris är jämfört med om värmen kört jämnt över hela dygnet."
-        )
+        st.metric(label="Optimeringseffekt", value=f"{besparing_pct:.1f}% billigare")
 
     st.divider()
 

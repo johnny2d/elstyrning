@@ -117,7 +117,6 @@ def get_nordpool_price(zone="SE2", target_date=None):
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
-    """Hämtar timvis temperaturprognos för ett specifikt datum genom att matcha mot tidsstämplarna."""
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
         target_date = datetime.now(sweden_tz)
@@ -147,7 +146,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
     current_t = get_outside_temp()
     return [current_t] * 24
 
-# --- TEMPERATUR.NU API (MED LUGNVIK-LÄNK) ---
+# --- TEMPERATUR.NU API ---
 def get_outside_temp():
     url = "https://www.temperatur.nu/jstemp.php?s=as-sem"
     try:
@@ -181,10 +180,7 @@ def get_outside_temp():
 
     return 5.0
 
-# --- AI STRATEGEN (GEMINI) MED BÄTTRE KVOT- OCH FELHANTERING ---
-import time
-import json
-
+# --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
@@ -212,7 +208,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     """
 
     max_retries = 3
-    retry_delay = 10  # sekunder för första återförsöket
+    retry_delay = 10
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -239,26 +235,16 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         except Exception as e:
             error_msg = str(e)
             print(f"[AI ERROR] Försök {attempt}/{max_retries} misslyckades: {error_msg}")
-            
-            # Om vi har kvar försök, vänta och försök igen vid överbelastning eller kvotfel
             if attempt < max_retries:
-                print(f"[AI RETRY] Väntar {retry_delay} sekunder innan nästa försök...")
                 time.sleep(retry_delay)
-                retry_delay *= 2  # Öka väntetiden till nästa försök (10s -> 20s)
+                retry_delay *= 2
             else:
-                # Sista försöket misslyckades – tillämpa fallback
-                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                    reasoning = "⚠️ API-kvoten för Gemini är tillfälligt slut (429) efter upprepade försök. Använder standardvärden."
-                elif "503" in error_msg or "UNAVAILABLE" in error_msg:
-                    reasoning = "⚠️ Gemini var överbelastad (503) efter upprepade försök. Använder standardvärden."
-                else:
-                    reasoning = f"⚠️ AI-fel ({error_msg[:30]}...) efter upprepade försök. Använder standardvärden."
-                    
-                return default_price_cap, default_min_on_blocks, reasoning
+                return default_price_cap, default_min_on_blocks, f"⚠️ AI-fel: {error_msg[:30]}"
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_switch(state: bool):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
+        print("[TUYA ERROR] Saknar API-nycklar för Tuya.")
         return
     try:
         cloud = tinytuya.Cloud(
@@ -267,21 +253,27 @@ def set_tuya_switch(state: bool):
             apiSecret=TUYA_API_SECRET,
             devId=TUYA_DEVICE_ID
         )
-        # Tuya Cloud API förväntar sig en lista med kommandoobjekt i "commands"
-        commands = {
-            "commands": [
-                {
-                    "code": "switch",
-                    "value": state
-                }
-            ]
-        }
-        response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-        print(f"[TUYA SEND COMMAND RESULT]: {response}")
+        
+        # Prova både 'switch' och 'switch_1' för att säkerställa kompatibilitet
+        for code_name in ["switch", "switch_1"]:
+            commands = {
+                "commands": [
+                    {
+                        "code": code_name,
+                        "value": state
+                    }
+                ]
+            }
+            response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
+            print(f"[TUYA SEND COMMAND ({code_name})]: state={state}, response={response}")
+            
+            if response and response.get("success"):
+                break
+                
     except Exception as e:
         print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
+
 def get_tuya_device_status():
-    """Hämtar aktuell status från Tuya-enheten (ON/OFF) robust oavsett kodnamn."""
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         return False, "OFF"
 
@@ -293,6 +285,7 @@ def get_tuya_device_status():
             devId=TUYA_DEVICE_ID
         )
         status_data = cloud.getstatus(TUYA_DEVICE_ID)
+        print(f"[TUYA STATUS RAW]: {status_data}")
 
         if status_data and status_data.get("success"):
             result = status_data.get("result", [])
@@ -302,19 +295,17 @@ def get_tuya_device_status():
                     if "switch" in code.lower():
                         is_on = item.get("value", False)
                         return True, ("ON" if is_on else "OFF")
-            return True, "ON"
+            return True, "OFF"
     except Exception as e:
         print(f"[TUYA STATUS ERROR]: {e}")
     
     return False, "OFF"
 
 # --- PULP OPTIMERINGSMOTOR ---
-import pulp
-
 def generate_daily_schedule(
     prices_96, 
-    max_off_blocks=8,          # Standard: max 2 timmar avstängt i rad
-    min_on_blocks=28,         # Standard: min 7 timmar körtid totalt
+    max_off_blocks=8, 
+    min_on_blocks=28, 
     current_temp=15.0, 
     cold_threshold=5.0, 
     min_minutes_cold=15, 
@@ -326,39 +317,29 @@ def generate_daily_schedule(
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
     
-    # 1. Målfunktion: Minimera kostnaden, men ge bonus/prioritet åt priser under price_cap
     costs = []
     for i in range(96):
         price = prices_96[i]
-        # Om priset är under price_cap drar vi av en liten bonus i målfunktionen 
-        # för att uppmuntra körtid utan att låsa problemet med hårda tvång
         effective_cost = price - 50.0 if (price_cap is not None and price <= price_cap) else price
         costs.append(x[i] * effective_cost)
     prob += pulp.lpSum(costs)
 
-    # 2. Krav på minsta totala körtid under dygnet
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
 
-    # 3. Hårt villkor: Max antal avstängda kvartar i rad (t.ex. 8 kvartar = 2 timmar)
     for i in range(96 - max_off_blocks):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
 
-    # 3b. Förhindra ensamma 15-minutersprickar (kräv minst 2 sammanhängande kvartar = 30 min)
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
-    # 4. ÅTERHÄMTNINGSREGEL (Prioritera värme vid kraftigt prisras efter en topp):
-    # Om priset sjunker med mer än 30 % eller > 30 öre jämfört med 1 timme tidigare (4 kvartar sedan)
     for i in range(4, 96):
         prev_price = prices_96[i - 4]
         curr_price = prices_96[i]
         if prev_price > 60.0 and (curr_price <= prev_price * 0.70 or (prev_price - curr_price) >= 30.0):
-            # Tvinga på värmen i 3 kvartar (1 timme) framåt från prisfallet
             end_slot = min(96, i + 3)
             for j in range(i, end_slot):
                 prob += x[j] == 1
 
-    # 5. Köldskyddsregel per timme vid låga utetemperaturer
     if current_temp <= cold_threshold and min_minutes_cold > 0:
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
         for hour in range(24):
@@ -367,8 +348,6 @@ def generate_daily_schedule(
             prob += pulp.lpSum([x[j] for j in range(start_slot, end_slot)]) >= blocks_per_hour_required
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    
-    # Returnera lösningen som en lista med booleans (True/False)
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
 
 # --- HUVUDLOGIK ---
@@ -404,7 +383,6 @@ def main():
         tomorrow_schedule_date = config.get("tomorrow_schedule_date")
         tomorrow_schedule = config.get("tomorrow_schedule")
 
-        # 1. Hämta schema för IDAG om det saknas
         if active_schedule_date != today_str:
             if tomorrow_schedule_date == today_str and tomorrow_schedule:
                 daily_schedule = tomorrow_schedule
@@ -429,22 +407,18 @@ def main():
             config["daily_schedule"] = daily_schedule
             save_config_to_gist(config)
 
-        # 2. Hämta schema för IMORGON (endast efter kl 14 om det saknas)
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
             temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
             
             if len(set(prices_tomorrow)) > 1: 
                 time.sleep(2)
-                
                 p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
                     prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
                 )
-                
                 new_tomorrow_sched = generate_daily_schedule(
                     prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
                 )
-                
                 config["tomorrow_schedule_date"] = tomorrow_str
                 config["tomorrow_schedule"] = new_tomorrow_sched
                 config["ai_latest_reasoning"] = reasoning_tom
@@ -454,40 +428,48 @@ def main():
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
 
+        # Utvärdera styrlogik och skapa tydlig motivering
         override = config.get("force_override", "AUTO")
         should_be_on = False
+        reason = "Okänd anledning"
         
+        cold_threshold = config.get("cold_temp_threshold", 0)
+        min_mins_cold = config.get("min_minutes_cold", 15)
+
         if override == "PÅ (Tvinga igång)":
             should_be_on = True
+            reason = "Manuell överstyrning: Tvinga PÅ"
         elif override == "AV (Stäng av allt)":
             should_be_on = False
+            reason = "Manuell överstyrning: Stäng AV"
         else:
             if current_price <= price_cap:
                 should_be_on = True
+                reason = f"Priset ({current_price:.1f} öre) understiger pristak ({price_cap:.1f} öre)"
             else:
                 if daily_schedule and len(daily_schedule) == 96:
                     should_be_on = daily_schedule[quarter_index]
+                    reason = f"Optimeringstabell (PuLP): Status är {'PÅ' if should_be_on else 'AV'} vid pris {current_price:.1f} öre"
                 else:
                     should_be_on = True
+                    reason = "Inget schema tillgängligt, kör som standard"
 
-            cold_threshold = config.get("cold_temp_threshold", 0)
-            min_mins_cold = config.get("min_minutes_cold", 15)
-            
             if current_temp <= cold_threshold and min_mins_cold > 0:
                 if now.minute < min_mins_cold:
                     should_be_on = True
+                    reason = f"Köldskydd aktivt (Temp: {current_temp}°C <= {cold_threshold}°C, minut {now.minute} < {min_mins_cold})"
 
-        # Skicka kommandot till Tuya
+        print(f"[STYRLED] Tid: {now.strftime('%H:%M')} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
+
         set_tuya_switch(should_be_on)
-        
-        # Läs av den faktiska statusen från Tuya efter kommandot för att säkerställa att det gick igenom
         _, actual_tuya_status = get_tuya_device_status()
         
         log_entry = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M"),
             "price": round(current_price, 2),
-            "status": actual_tuya_status,  # Sparar den bekräftade statusen här
-            "temp": round(current_temp, 1)
+            "status": actual_tuya_status,
+            "temp": round(current_temp, 1),
+            "reason": reason
         }
         history.append(log_entry)
         save_history(history)
