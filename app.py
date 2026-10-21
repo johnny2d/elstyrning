@@ -272,6 +272,48 @@ with tab2:
         st.cache_data.clear()
         st.rerun()
 
+    st.divider()
+    if st.button("🔄 Forcera omräkning med AI nu"):
+        with st.spinner("Hämtar priser och väderprognos för idag och imorgon..."):
+            try:
+                now = datetime.now(sweden_tz)
+                today_str = now.strftime("%Y-%m-%d")
+                tomorrow_dt = now + timedelta(days=1)
+                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+                current_temp = get_outside_temp()
+
+                prices_today = get_nordpool_price(zone="SE2", target_date=now)
+                prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+                temp_forecast = get_hourly_temp_forecast(target_date=now)
+
+                max_off = config.get("max_off_blocks", 12)
+                min_on = config.get("min_on_blocks", 44)
+                cold_th = config.get("cold_temp_threshold", 0)
+                min_mins = config.get("min_minutes_cold", 15)
+
+                p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
+                    prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
+                )
+                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                    prices_tomorrow, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
+                )
+
+                updated_config = config.copy()
+                updated_config["schedule_date"] = today_str
+                updated_config["daily_schedule"] = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_today)
+                updated_config["tomorrow_schedule_date"] = tomorrow_str
+                updated_config["tomorrow_schedule"] = generate_daily_schedule(prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, cold_threshold=cold_th, min_minutes_cold=min_mins, price_cap=p_cap_tom)
+                updated_config["price_cap"] = p_cap_today
+                updated_config["min_on_blocks"] = m_blocks_today
+                updated_config["ai_latest_reasoning"] = reasoning_today
+
+                save_config(updated_config)
+                st.cache_data.clear()
+                st.success("Scheman och AI-analyser för både idag och imorgon har uppdaterats!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ett fel uppstod: {e}")
+
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
     st.subheader("Planerat elschema, pris och temperaturprognos")
