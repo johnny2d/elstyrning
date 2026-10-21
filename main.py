@@ -428,7 +428,7 @@ def main():
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
 
-        # Utvärdera styrlogik och skapa tydlig motivering
+# Utvärdera styrlogik och skapa tydlig motivering
         override = config.get("force_override", "AUTO")
         should_be_on = False
         reason = "Okänd anledning"
@@ -443,22 +443,20 @@ def main():
             should_be_on = False
             reason = "Manuell överstyrning: Stäng AV"
         else:
-            if current_price <= price_cap:
-                should_be_on = True
-                reason = f"Priset ({current_price:.1f} öre) understiger pristak ({price_cap:.1f} öre)"
+            # 1. Följ det linjärt optimerade schemat (PuLP) i första hand
+            if daily_schedule and len(daily_schedule) == 96:
+                should_be_on = daily_schedule[quarter_index]
+                reason = f"Optimeringsschema (PuLP): Status { 'PÅ' if should_be_on else 'AV' } (Pris: {current_price:.1f} öre, AI-pristak: {price_cap:.1f} öre)"
             else:
-                if daily_schedule and len(daily_schedule) == 96:
-                    should_be_on = daily_schedule[quarter_index]
-                    reason = f"Optimeringstabell (PuLP): Status är {'PÅ' if should_be_on else 'AV'} vid pris {current_price:.1f} öre"
-                else:
-                    should_be_on = True
-                    reason = "Inget schema tillgängligt, kör som standard"
+                # Fallback om intet schema finns
+                should_be_on = current_price <= price_cap
+                reason = f"Fallback (Inget schema): Pris {current_price:.1f} öre vs Pristak {price_cap:.1f} öre"
 
+            # 2. Köldskyddskontroll (Kan överstyra schemat till PÅ om det är svinkallt)
             if current_temp <= cold_threshold and min_mins_cold > 0:
                 if now.minute < min_mins_cold:
                     should_be_on = True
-                    reason = f"Köldskydd aktivt (Temp: {current_temp}°C <= {cold_threshold}°C, minut {now.minute} < {min_mins_cold})"
-
+                    reason = f"Köldskydd aktivt (Temp: {current_temp}°C <= {cold_threshold}°C)"
         print(f"[STYRLED] Tid: {now.strftime('%H:%M')} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
         set_tuya_switch(should_be_on)
