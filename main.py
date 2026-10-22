@@ -272,7 +272,7 @@ def set_tuya_switch(state: bool):
                 
     except Exception as e:
         print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
-        
+
 def get_tuya_device_status():
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         return False, "OFF"
@@ -379,10 +379,13 @@ def main():
 
         active_schedule_date = config.get("schedule_date")
         daily_schedule = config.get("daily_schedule")
+        last_ai_update_str = config.get("last_ai_update")
         
         tomorrow_schedule_date = config.get("tomorrow_schedule_date")
         tomorrow_schedule = config.get("tomorrow_schedule")
 
+        # 1. Kontrollera om vi behöver räkna om (ny dag eller mer än 3 timmar sedan sist)
+        needs_ai_update = False
         if active_schedule_date != today_str:
             if tomorrow_schedule_date == today_str and tomorrow_schedule:
                 daily_schedule = tomorrow_schedule
@@ -390,22 +393,40 @@ def main():
                 config["tomorrow_schedule"] = None
                 config["tomorrow_schedule_date"] = None
             else:
-                prices_today = get_nordpool_price(zone="SE2", target_date=now)
-                temp_forecast = get_hourly_temp_forecast(target_date=now)
-                
-                p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
-                    prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
-                )
-                
-                daily_schedule = generate_daily_schedule(prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, current_temp=current_temp, price_cap=p_cap)
-                active_schedule_date = today_str
-                config["price_cap"] = p_cap
-                config["min_on_blocks"] = m_blocks
-                config["ai_latest_reasoning"] = reasoning
+                needs_ai_update = True
+        elif not last_ai_update_str:
+            needs_ai_update = True
+        else:
+            try:
+                last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
+                if (now - last_update_dt).total_seconds() >= 3 * 3600:
+                    needs_ai_update = True
+            except Exception:
+                needs_ai_update = True
 
-            config["schedule_date"] = active_schedule_date
-            config["daily_schedule"] = daily_schedule
-            save_config_to_gist(config)
+        if needs_ai_update:
+            print("[AI UPDATE] Kör automatisk omräkning av AI-parametrar och schema (3-timmarsintervall eller ny dag)...")
+            prices_today = get_nordpool_price(zone="SE2", target_date=now)
+            temp_forecast = get_hourly_temp_forecast(target_date=now)
+            
+            p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
+            )
+            
+            daily_schedule = generate_daily_schedule(
+                prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
+                current_temp=current_temp, price_cap=p_cap
+            )
+            
+            active_schedule_date = today_str
+            config["price_cap"] = p_cap
+            config["min_on_blocks"] = m_blocks
+            config["ai_latest_reasoning"] = reasoning
+            config["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+
+        config["schedule_date"] = active_schedule_date
+        config["daily_schedule"] = daily_schedule
+        save_config_to_gist(config)
 
         if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
             prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
