@@ -39,17 +39,23 @@ headers = {
 
 def load_gist_data():
     try:
-        res = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers)
+        res = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
         if res.status_code == 200:
             files = res.json()["files"]
             config = json.loads(files["config.json"]["content"]) if "config.json" in files else {}
             history = json.loads(files["history.json"]["content"]) if "history.json" in files else []
             return config, history
+        else:
+            print(f"[WARNING] Gist hämtning svarade med statuskod {res.status_code}")
     except Exception as e:
-        print(f"Fel vid hämtning från Gist: {e}")
+        print(f"[ERROR] Fel vid hämtning från Gist: {e}")
     return {}, []
 
 def save_config_to_gist(config_data):
+    if not GIST_ID:
+        print("[ERROR] GIST_ID saknas! Kan inte spara config.")
+        return
+
     payload = {
         "files": {
             "config.json": {
@@ -58,19 +64,22 @@ def save_config_to_gist(config_data):
         }
     }
     
-    if not GIST_ID:
-        print("[ERROR] GIST_ID saknas! Kan inte spara config.")
-        return
-
-    try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        response = requests.patch(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"[ERROR] Kunde inte spara config till Gist. Svar: {response.text}")
-    except Exception as e:
-        print(f"[ERROR] Fel vid sparande av config till Gist: {e}")
+    for attempt in range(2):
+        try:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            response = requests.patch(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                return
+            else:
+                print(f"[WARNING] Försök {attempt+1}: Kunde inte spara config till Gist. Svar: {response.text}")
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} - Fel vid sparande av config till Gist: {e}")
+    print("[ERROR] Misslyckades med att spara config till Gist efter flera försök.")
 
 def save_history(history_data):
+    if not GIST_ID:
+        return
+
     trimmed_history = history_data[-200:]
     payload = {
         "files": {
@@ -80,11 +89,14 @@ def save_history(history_data):
         }
     }
     
-    if not GIST_ID:
-        return
-
-    url = f"https://api.github.com/gists/{GIST_ID}"
-    requests.patch(url, headers=headers, json=payload)
+    for attempt in range(2):
+        try:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            response = requests.patch(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                return
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} - Fel vid sparande av history till Gist: {e}")
 
 # --- NORDPOOL API ---
 def get_nordpool_price(zone="SE2", target_date=None):
@@ -98,20 +110,24 @@ def get_nordpool_price(zone="SE2", target_date=None):
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
     
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-            if len(prices) == 96:
-                return prices
-            elif len(prices) == 24:
-                prices_96 = []
-                for p in prices:
-                    prices_96.extend([p] * 4)
-                return prices_96
-    except Exception as e:
-        print(f"[ERROR] Undantag vid hämtning av elpriser: {e}")
+    for attempt in range(2):
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+                if len(prices) == 96:
+                    return prices
+                elif len(prices) == 24:
+                    prices_96 = []
+                    for p in prices:
+                        prices_96.extend([p] * 4)
+                    return prices_96
+            break
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} misslyckades vid hämtning av elpriser: {e}")
+            if attempt == 1:
+                print(f"[ERROR] Kunde inte hämta elpriser från ElprisetJustNu efter flera försök.")
         
     return [50.0] * 96
 
@@ -124,65 +140,75 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
     target_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date, "strftime") else str(target_date)
 
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
-    try:
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if "hourly" in data and "time" in data["hourly"] and "temperature_2m" in data["hourly"]:
-                times = data["hourly"]["time"]
-                temps = data["hourly"]["temperature_2m"]
-                
-                day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
-                
-                if len(day_temps) == 24:
-                    return day_temps
-                elif len(day_temps) > 0:
-                    while len(day_temps) < 24:
-                        day_temps.append(day_temps[-1])
-                    return day_temps[:24]
-    except Exception as e:
-        print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo: {e}")
+    
+    for attempt in range(2):
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if "hourly" in data and "time" in data["hourly"] and "temperature_2m" in data["hourly"]:
+                    times = data["hourly"]["time"]
+                    temps = data["hourly"]["temperature_2m"]
+                    
+                    day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
+                    
+                    if len(day_temps) == 24:
+                        return day_temps
+                    elif len(day_temps) > 0:
+                        while len(day_temps) < 24:
+                            day_temps.append(day_temps[-1])
+                        return day_temps[:24]
+            break
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} misslyckades för Open-Meteo prognos: {e}")
+            if attempt == 1:
+                print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo efter flera försök.")
     
     current_t = get_outside_temp()
     return [current_t] * 24
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
-    url = "https://www.temperatur.nu/jstemp.php?s=as-sem"
-    try:
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            text = res.text.strip()
-            try:
-                data = res.json()
-                if "temp" in data:
-                    return float(data["temp"])
-            except Exception:
-                pass
-            
-            import re
-            numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
-            if numbers:
-                val = float(numbers[0])
-                if -40 <= val <= 40:
-                    return val
-    except Exception as e:
-        print(f"[ERROR] Kunde inte hämta temperatur från Lugnvik: {e}")
+    url = f"https://www.temperatur.nu/jstemp.php?s={TEMPERATUR_NU_STATION}"
     
+    for attempt in range(2):
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                text = res.text.strip()
+                try:
+                    data = res.json()
+                    if "temp" in data:
+                        return float(data["temp"])
+                except Exception:
+                    pass
+                
+                import re
+                numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+                if numbers:
+                    val = float(numbers[0])
+                    if -40 <= val <= 40:
+                        return val
+            break
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu: {e}")
+    
+    # Reservlösning om temperatur.nu sviker: Open-Meteo current
     try:
         lat, lon = 63.25, 14.56
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-        res_om = requests.get(url_om, timeout=4)
+        res_om = requests.get(url_om, timeout=8)
         if res_om.status_code == 200:
             return float(res_om.json()["current"]["temperature_2m"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARNING] Även reservmätning via Open-Meteo current misslyckades: {e}")
 
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
+        print("[WARNING] Ingen AI-nyckel tillgänglig, använder standardparametrar.")
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
 
     prompt = f"""
@@ -208,7 +234,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     """
 
     max_retries = 3
-    retry_delay = 10
+    retry_delay = 5
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -246,58 +272,63 @@ def set_tuya_switch(state: bool):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         print("[TUYA ERROR] Saknar API-nycklar för Tuya.")
         return
-    try:
-        cloud = tinytuya.Cloud(
-            apiRegion=TUYA_REGION,
-            apiKey=TUYA_API_KEY,
-            apiSecret=TUYA_API_SECRET,
-            devId=TUYA_DEVICE_ID
-        )
-        
-        for code_name in ["switch", "switch_1"]:
-            commands = {
-                "commands": [
-                    {
-                        "code": code_name,
-                        "value": state
-                    }
-                ]
-            }
-            response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-            print(f"[TUYA CMD ({code_name})]: state={state}, response={response}")
+    
+    for attempt in range(2):
+        try:
+            cloud = tinytuya.Cloud(
+                apiRegion=TUYA_REGION,
+                apiKey=TUYA_API_KEY,
+                apiSecret=TUYA_API_SECRET,
+                devId=TUYA_DEVICE_ID
+            )
             
-            # Anse det som framgångsrikt om vi får ett svar som inte är tomt eller om result är True
-            if response and (response.get("success") is True or response.get("result") is True):
-                break
+            success = False
+            for code_name in ["switch", "switch_1"]:
+                commands = {
+                    "commands": [
+                        {
+                            "code": code_name,
+                            "value": state
+                        }
+                    ]
+                }
+                response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
+                print(f"[TUYA CMD ({code_name})]: state={state}, response={response}")
                 
-    except Exception as e:
-        print(f"[TUYA ERROR] Kunde inte skicka kommando: {e}")
+                if response and (response.get("success") is True or response.get("result") is True):
+                    success = True
+                    break
+            if success:
+                return
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando: {e}")
+    print("[ERROR] Tuya kommando misslyckades efter flera försök.")
 
 def get_tuya_device_status():
     if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
         return False, "OFF"
 
-    try:
-        cloud = tinytuya.Cloud(
-            apiRegion=TUYA_REGION,
-            apiKey=TUYA_API_KEY,
-            apiSecret=TUYA_API_SECRET,
-            devId=TUYA_DEVICE_ID
-        )
-        status_data = cloud.getstatus(TUYA_DEVICE_ID)
-        # (Rensat bort den stora [TUYA STATUS RAW]-utskriften som spammade konsolen)
+    for attempt in range(2):
+        try:
+            cloud = tinytuya.Cloud(
+                apiRegion=TUYA_REGION,
+                apiKey=TUYA_API_KEY,
+                apiSecret=TUYA_API_SECRET,
+                devId=TUYA_DEVICE_ID
+            )
+            status_data = cloud.getstatus(TUYA_DEVICE_ID)
 
-        if status_data and status_data.get("success"):
-            result = status_data.get("result", [])
-            if isinstance(result, list):
-                for item in result:
-                    code = item.get("code", "")
-                    if "switch" in code.lower():
-                        is_on = item.get("value", False)
-                        return True, ("ON" if is_on else "OFF")
-            return True, "OFF"
-    except Exception as e:
-        print(f"[TUYA STATUS ERROR]: {e}")
+            if status_data and status_data.get("success"):
+                result = status_data.get("result", [])
+                if isinstance(result, list):
+                    for item in result:
+                        code = item.get("code", "")
+                        if "switch" in code.lower():
+                            is_on = item.get("value", False)
+                            return True, ("ON" if is_on else "OFF")
+                return True, "OFF"
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR]: {e}")
     
     return False, "OFF"
 
@@ -368,8 +399,8 @@ def main():
                 last_time = datetime.strptime(last_entry["timestamp"], "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
                 if (now - last_time).total_seconds() / 60 < 8:
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARNING] Kunde inte parsa sista historiktiden: {e}")
 
         current_temp = get_outside_temp()
         
@@ -401,7 +432,8 @@ def main():
                 last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
                 if (now - last_update_dt).total_seconds() >= 3 * 3600:
                     needs_ai_update = True
-            except Exception:
+            except Exception as e:
+                print(f"[WARNING] Kunde inte parsa last_ai_update: {e}")
                 needs_ai_update = True
 
         if needs_ai_update:
@@ -428,22 +460,26 @@ def main():
         config["daily_schedule"] = daily_schedule
         save_config_to_gist(config)
 
-        if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
-            prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-            temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
-            
-            if len(set(prices_tomorrow)) > 1: 
-                time.sleep(2)
-                p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                    prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
-                )
-                new_tomorrow_sched = generate_daily_schedule(
-                    prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
-                )
-                config["tomorrow_schedule_date"] = tomorrow_str
-                config["tomorrow_schedule"] = new_tomorrow_sched
-                config["ai_latest_reasoning"] = reasoning_tom
-                save_config_to_gist(config)
+        # 2. Hämta morgondagens schema efter kl 14 (isolerat med try/except så det inte kraschar dagsstyrningen)
+        try:
+            if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
+                prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+                temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
+                
+                if len(set(prices_tomorrow)) > 1: 
+                    time.sleep(2)
+                    p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                        prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
+                    )
+                    new_tomorrow_sched = generate_daily_schedule(
+                        prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                    )
+                    config["tomorrow_schedule_date"] = tomorrow_str
+                    config["tomorrow_schedule"] = new_tomorrow_sched
+                    config["ai_latest_reasoning"] = reasoning_tom
+                    save_config_to_gist(config)
+        except Exception as e:
+            print(f"[ERROR] Misslyckades med att generera/spara morgondagens schema: {e}")
 
         prices_today = get_nordpool_price(zone="SE2", target_date=now)
         quarter_index = (now.hour * 4) + (now.minute // 15)
@@ -501,7 +537,7 @@ def main():
         history.append(log_entry)
         save_history(history)
     except Exception as e:
-        print(f"[FATAL ERROR] Skriptet kraschade: {e}")
+        print(f"[FATAL ERROR] Skriptet kraschade i main(): {e}")
 
 if __name__ == "__main__":
     main()
