@@ -216,60 +216,36 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
 
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
-    
-    Här är elpriserna i öre/kWh för varje kvart (96 st) för {target_day_label}:
-    {prices_96}
-    
-    Här är den förväntade utetemperaturen per timme (°C, 24 timmar) för {target_day_label}:
-    {temp_hourly}
-    
-    Din uppgift är att analysera prisbilden och kylan för att bestämma två nyckelparametrar för just detta dygn:
-    1. "price_cap": Pristak i öre/kWh (om priset understiger detta betraktas det som billigt och pannan/värmen ska köras).
-    2. "min_on_hours": Totalt antal timmar som värmen absolut minst behöver vara igång under dygnet för att inte huset ska kyla ur.
-
-    Regler och riktlinjer för körtid:
-    - Vid en dygnsmedeltemperatur kring 0 °C bör cirka 7 timmars total körtid räcka.
-    - Om det är kallare ute krävs fler timmar; om det är mildare kan det vara ännu färre.
-    - Om priset har kraftiga dalar ska pristaket sättas så att vi nyttjar dalarna utan att bränna el på topparna.
-    
+    Här är elpriserna (96 kvartar) för {target_day_label}: {prices_96}
+    Här är utetemperaturen (24h): {temp_hourly}
     Svara ENBART med ett giltigt JSON-objekt enligt detta format:
-    {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring på 1-2 meningar>"}}
+    {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring>"}}
     """
 
-    max_retries = 3
-    retry_delay = 5
+    try:
+        if GEMINI_AVAILABLE == "genai_new":
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            raw_text = response.text
+        elif GEMINI_AVAILABLE == "genai_old":
+            genai_old.configure(api_key=GEMINI_API_KEY)
+            model = genai_old.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            raw_text = response.text
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw_text = ""
-            if GEMINI_AVAILABLE == "genai_new":
-                client = genai.Client(api_key=GEMINI_API_KEY)
-                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-                raw_text = response.text
-            elif GEMINI_AVAILABLE == "genai_old":
-                genai_old.configure(api_key=GEMINI_API_KEY)
-                model = genai_old.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(prompt)
-                raw_text = response.text
+        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json)
+        
+        price_cap = float(data.get("price_cap", default_price_cap))
+        min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
+        motivering = data.get("motivering", "AI-beräkning utförd.")
+        
+        return price_cap, min_on_blocks, motivering
 
-            clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-            data = json.loads(clean_json)
-            
-            price_cap = float(data.get("price_cap", default_price_cap))
-            min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
-            motivering = data.get("motivering", "AI-beräkning utförd.")
-            
-            return price_cap, min_on_blocks, motivering
-
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[AI ERROR] Försök {attempt}/{max_retries} misslyckades: {error_msg}")
-            if attempt < max_retries:
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                return default_price_cap, default_min_on_blocks, f"⚠️ AI-fel: {error_msg[:30]}"
-
+    except Exception as e:
+        # Om kvoten är slut (429) eller annat fel, logga en enda gång och använd standard utan att göra flera försök
+        print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/kvot nådd): {str(e)[:50]}")
+        return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
