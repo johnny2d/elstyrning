@@ -99,6 +99,7 @@ def save_history(history_data):
             print(f"[WARNING] Försök {attempt+1} - Fel vid sparande av history till Gist: {e}")
 
 # --- NORDPOOL API ---
+# --- NORDPOOL API ---
 def get_nordpool_price(zone="SE2", target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
@@ -109,10 +110,13 @@ def get_nordpool_price(zone="SE2", target_date=None):
     day = target_date.strftime("%d")
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     for attempt in range(2):
         try:
-            res = requests.get(url, timeout=10)
+            res = requests.get(url, headers=headers, timeout=10)
+            print(f"[DEBUG] Hämtar elpriser från {url} - Statuskod: {res.status_code}")
+            
             if res.status_code == 200:
                 data = res.json()
                 prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
@@ -123,12 +127,14 @@ def get_nordpool_price(zone="SE2", target_date=None):
                     for p in prices:
                         prices_96.extend([p] * 4)
                     return prices_96
-            break
+            else:
+                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}. Svar: {res.text[:100]}...")
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} misslyckades vid hämtning av elpriser: {e}")
             if attempt == 1:
                 print(f"[ERROR] Kunde inte hämta elpriser från ElprisetJustNu efter flera försök.")
         
+    print("[ERROR] Faller tillbaka på standardpris 50.0 öre.")
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
