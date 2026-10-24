@@ -30,12 +30,6 @@ from main import (
     get_ai_optimized_parameters
 )
 
-# Kör huvudlogiken vid sidladdning om det behövs
-try:
-    main()
-except Exception as e:
-    print(f"[WARNING] Kunde inte köra main() vid start: {e}")
-
 st.set_page_config(page_title="Elstyrning Control Panel", page_icon="⚡", layout="wide")
 
 def check_password():
