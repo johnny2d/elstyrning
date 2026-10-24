@@ -23,7 +23,6 @@ if hasattr(st, "secrets"):
 
 from main import (
     get_tuya_device_status,
-    main, 
     generate_daily_schedule, 
     get_nordpool_price, 
     get_outside_temp, 
