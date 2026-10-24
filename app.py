@@ -16,6 +16,12 @@ if hasattr(st, "secrets"):
         os.environ["GIST_ID"] = st.secrets["GIST_ID"]
     if "GIST_TOKEN" in st.secrets:
         os.environ["GIST_TOKEN"] = st.secrets["GIST_TOKEN"]
+    if "TUYA_API_KEY" in st.secrets:
+        os.environ["TUYA_API_KEY"] = st.secrets["TUYA_API_KEY"]
+    if "TUYA_API_SECRET" in st.secrets:
+        os.environ["TUYA_API_SECRET"] = st.secrets["TUYA_API_SECRET"]
+    if "TUYA_DEVICE_ID" in st.secrets:
+        os.environ["TUYA_DEVICE_ID"] = st.secrets["TUYA_DEVICE_ID"]
 
 from main import (
     get_tuya_device_status,
