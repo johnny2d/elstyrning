@@ -100,6 +100,7 @@ def save_history(history_data):
 
 # --- NORDPOOL API ---
 # --- NORDPOOL API ---
+# --- NORDPOOL API ---
 def get_nordpool_price(zone="SE2", target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
@@ -119,7 +120,13 @@ def get_nordpool_price(zone="SE2", target_date=None):
             
             if res.status_code == 200:
                 data = res.json()
+                if not isinstance(data, list) or len(data) == 0:
+                    print(f"[WARNING] API returnerade tom lista eller ogiltigt format för {month}-{day}")
+                    break
+
                 prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+                print(f"[DEBUG] Mottog {len(prices)} prisvärden från API.")
+
                 if len(prices) == 96:
                     return prices
                 elif len(prices) == 24:
@@ -127,51 +134,21 @@ def get_nordpool_price(zone="SE2", target_date=None):
                     for p in prices:
                         prices_96.extend([p] * 4)
                     return prices_96
+                else:
+                    # Om det är ett oväntat antal priser, fyll ut eller kapa till 96
+                    print(f"[WARNING] Oväntat antal prisvärden ({len(prices)} st). Anpassar till 96 kvartar.")
+                    while len(prices) < 96:
+                        prices.append(prices[-1])
+                    return prices[:96]
             else:
-                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}. Svar: {res.text[:100]}...")
+                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}.")
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} misslyckades vid hämtning av elpriser: {e}")
             if attempt == 1:
                 print(f"[ERROR] Kunde inte hämta elpriser från ElprisetJustNu efter flera försök.")
         
-    print("[ERROR] Faller tillbaka på standardpris 50.0 öre.")
+    print(f"[ERROR] Kunde inte läsa priser för {month}-{day}, faller tillbaka på standardpris 50.0 öre.")
     return [50.0] * 96
-
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
-def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
-    sweden_tz = ZoneInfo("Europe/Stockholm")
-    if not target_date:
-        target_date = datetime.now(sweden_tz)
-    
-    target_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date, "strftime") else str(target_date)
-
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
-    
-    for attempt in range(2):
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if "hourly" in data and "time" in data["hourly"] and "temperature_2m" in data["hourly"]:
-                    times = data["hourly"]["time"]
-                    temps = data["hourly"]["temperature_2m"]
-                    
-                    day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
-                    
-                    if len(day_temps) == 24:
-                        return day_temps
-                    elif len(day_temps) > 0:
-                        while len(day_temps) < 24:
-                            day_temps.append(day_temps[-1])
-                        return day_temps[:24]
-            break
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} misslyckades för Open-Meteo prognos: {e}")
-            if attempt == 1:
-                print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo efter flera försök.")
-    
-    current_t = get_outside_temp()
-    return [current_t] * 24
 
 # --- TEMPERATUR.NU API ---
 def get_outside_temp():
