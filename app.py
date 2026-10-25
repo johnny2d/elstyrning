@@ -205,10 +205,7 @@ with st.sidebar:
                     def_cap = ref_dev.get("price_cap", 50.0)
                     def_min_on = ref_dev.get("min_on_blocks", 44)
                     max_off = ref_dev.get("max_off_blocks", 12)
-                    cold_th = ref_dev.get("cold_temp_threshold", 0)
-                    min_mins = ref_dev.get("min_minutes_cold", 15)
 
-                    # Kör AI för idag
                     p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
                         prices_today, temp_forecast, default_price_cap=def_cap, default_min_on_blocks=def_min_on, target_day_label=f"idag ({h_data.get('name')})"
                     )
@@ -225,7 +222,6 @@ with st.sidebar:
                         ref_dev["price_cap"] = p_cap_today
                         ref_dev["min_on_blocks"] = m_blocks_today
 
-                    # Försök hämta för imorgon om de finns
                     try:
                         prices_tom = get_nordpool_price(zone=h_zone, target_date=tomorrow_dt)
                         if len(set(prices_tom)) > 1:
@@ -275,7 +271,7 @@ with tab_overview:
                 device_statuses = []
                 for dev in h_data.get("devices", []):
                     dev_name = dev.get("name")
-                    connected, status_msg = get_tuya_device_status(dev.get("device_id")) if dev.get("device_id") else (False, "Ej konfigurerad")
+                    connected, status_msg, _ = get_tuya_device_status(dev.get("device_id"), device_type=dev.get("type", "switch")) if dev.get("device_id") else (False, "Ej konfigurerad", None)
                     device_statuses.append(f"**{dev_name}**: {status_msg}" + (" ⚠️" if not connected and dev.get("device_id") else ""))
                 
                 cols[3].markdown("**Enhetsstatus:**<br>" + ("<br>".join(device_statuses) if device_statuses else "Inga enheter"), unsafe_allow_html=True)
@@ -285,7 +281,8 @@ with tab_overview:
 
 # --- TAB 1: HISTORIK OCH GRAFER ---
 with tab1:
-    st.subheader(f"Övervakning för {current_house.get('name')} – {current_device.get('name')}")
+    is_thermostat = current_device.get("type") == "thermostat"
+    st.subheader(f"Övervakning för {current_house.get('name')} – {current_device.get('name')} ({'Termostat' if is_thermostat else 'Switch'})")
     
     if history:
         df = pd.DataFrame(history)
@@ -295,26 +292,36 @@ with tab1:
         
         if not df.empty:
             df['time'] = pd.to_datetime(df['timestamp'])
-            df['status_num'] = df['status'].apply(lambda x: 1 if x == 'ON' else 0)
+            
+            if is_thermostat:
+                # Extrahera numeriskt värde från status (t.ex. "10.0°C" -> 10.0)
+                df['status_val'] = df['status'].astype(str).str.replace('°C', '').astype(float)
+            else:
+                df['status_num'] = df['status'].apply(lambda x: 1 if x == 'ON' else 0)
             
             latest = df.iloc[-1]
             
             hist_snitt = df['price'].mean()
-            hist_on_mask = df['status'] == 'ON'
+            if is_thermostat:
+                t_high = float(current_device.get("target_temp_high", 10.0))
+                hist_on_mask = df['status_val'] >= t_high
+            else:
+                hist_on_mask = df['status'] == 'ON'
+                
             hist_on_snitt = df.loc[hist_on_mask, 'price'].mean() if hist_on_mask.any() else 0.0
             hist_diff = hist_snitt - hist_on_snitt
             hist_effekt = ((hist_snitt - hist_on_snitt) / hist_snitt * 100) if hist_snitt > 0 else 0.0
 
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Aktuellt pris", f"{latest.get('price', 0):.2f} öre/kWh")
-            col2.metric("Enhetsstatus", "PÅ 🟢" if latest.get('status') == 'ON' else "AV 🔴")
-            col3.metric("Utetemperatur", f"{latest.get('temp', 0):.1f} °C")
+            col2.metric("Måltemperatur / Status", latest.get('status', 'N/A'))
+            col3.metric("Uppmätt enhetstemp", f"{latest.get('device_temp', latest.get('temp', 0)):.1f} °C")
             col4.metric("Senast uppdaterad", latest.get('time', datetime.now()).strftime('%H:%M'))
 
             kpi1, kpi2, kpi3 = st.columns(3)
             kpi1.metric("Historiskt snittpris", f"{hist_snitt:.1f} öre")
             kpi2.metric(
-                "Snittpris vid aktiv körtid", 
+                "Snittpris vid aktiv drift", 
                 f"{hist_on_snitt:.1f} öre", 
                 delta=f"-{hist_diff:.1f} öre" if hist_diff >= 0 else f"+{abs(hist_diff):.1f} öre",
                 delta_color="normal" if hist_diff >= 0 else "inverse"
@@ -324,19 +331,30 @@ with tab1:
             st.divider()
 
             fig = make_subplots(specs=[[{"secondary_y": True}]])
-            status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
             
-            fig.add_trace(
-                go.Scatter(
-                    x=df['time'], y=df['status_num'],
-                    name="Enhetsstatus", mode="lines+markers",
-                    line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
-                    marker=dict(size=8, color=status_colors, symbol="circle"),
-                    hovertemplate="Tid: %{x|%H:%M}<br>Status: %{customdata}<extra></extra>",
-                    customdata=df['status']
-                ),
-                secondary_y=True
-            )
+            if is_thermostat:
+                fig.add_trace(
+                    go.Scatter(
+                        x=df['time'], y=df['status_val'],
+                        name="Måltemperatur (°C)", mode="lines+markers",
+                        line=dict(shape="hv", color="#2ecc71", width=2),
+                        marker=dict(size=6, color="#2980b9")
+                    ),
+                    secondary_y=True
+                )
+            else:
+                status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
+                fig.add_trace(
+                    go.Scatter(
+                        x=df['time'], y=df['status_num'],
+                        name="Enhetsstatus", mode="lines+markers",
+                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
+                        marker=dict(size=8, color=status_colors, symbol="circle"),
+                        hovertemplate="Tid: %{x|%H:%M}<br>Status: %{customdata}<extra></extra>",
+                        customdata=df['status']
+                    ),
+                    secondary_y=True
+                )
 
             fig.add_trace(
                 go.Scatter(
@@ -351,10 +369,10 @@ with tab1:
 
             fig.add_trace(
                 go.Scatter(
-                    x=df['time'], y=df['temp'],
-                    name="Utetemperatur (°C)", mode="lines",
-                    line=dict(color="#ffa726", width=2, dash="dot"),
-                    hovertemplate="Tid: %{x|%H:%M}<br>Temp: %{y:.1f} °C<extra></extra>"
+                    x=df['time'], y=df.get('device_temp', df['temp']),
+                    name="Uppmätt enhetstemp (°C)", mode="lines",
+                    line=dict(color="#e74c3c", width=2, dash="dash"),
+                    hovertemplate="Tid: %{x|%H:%M}<br>Enhetstemp: %{y:.1f} °C<extra></extra>"
                 ),
                 secondary_y=False
             )
@@ -366,16 +384,16 @@ with tab1:
                 height=440
             )
 
-            fig.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
-            fig.update_yaxes(
-                title_text="Status", tickvals=[0, 1],
-                ticktext=["AV 🔴", "PÅ 🟢"], range=[-0.2, 1.2], secondary_y=True
-            )
+            fig.update_yaxes(title_text="Elpris (öre) & Temp (°C)", secondary_y=False)
+            if is_thermostat:
+                fig.update_yaxes(title_text="Måltemperatur (°C)", secondary_y=True)
+            else:
+                fig.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV 🔴", "PÅ 🟢"], range=[-0.2, 1.2], secondary_y=True)
 
             st.plotly_chart(fig, width='stretch')
             
             with st.expander("Visa rådata / logg med orsaker"):
-                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'reason'] if c in df.columns]
+                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'device_temp', 'reason'] if c in df.columns]
                 st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width='stretch')
         else:
             st.info("Ingen historik matchar det valda huset och enheten än.")
@@ -383,49 +401,70 @@ with tab1:
         st.info("Ingen historik har loggats än.")
 
     st.divider()
-    tuya_connected, tuya_msg = get_tuya_device_status(current_device.get("device_id")) if current_device.get("device_id") else (False, "Inget Device ID angivet")
+    tuya_connected, tuya_msg, device_measured_temp = get_tuya_device_status(current_device.get("device_id"), device_type=current_device.get("type", "switch")) if current_device.get("device_id") else (False, "Ej konfigurerad", None)
     outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
     
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Aktivt Pristak", f"{current_device.get('price_cap', 50):.1f} öre")
     with col2:
-        st.metric("Utetemperatur", f"{outside_temp:.1f} °C")
+        st.metric("Uppmätt Givatemperatur", f"{device_measured_temp:.1f} °C" if device_measured_temp is not None else f"{outside_temp:.1f} °C (Ute)")
     with col3:
-        st.metric("Tuya Enhetsstatus", tuya_msg)
+        st.metric("Tuya Status / Måltemp", tuya_msg)
 
     if not tuya_connected and current_device.get("device_id"):
-        st.warning(f"⚠️ Varning: Kunde inte nå Tuya moln-API för enhet '{current_device.get('name')}'. Kontrollera nätverk eller API-nycklar.")
+        st.warning(f"⚠️ Varning: Kunde inte nå Tuya moln-API för enhet '{current_device.get('name')}'.")
 
 # --- TAB 2: INSTÄLLNINGAR ---
 with tab2:
-    st.subheader(f"Inställningar för enhet: {current_device.get('name')}")
+    st.subheader(f"Inställningar för enhet: {current_device.get('name')} ({current_device.get('type', 'switch').capitalize()})")
     
-    min_on_hours = st.slider("Minsta totala körtid per dygn (timmar)", min_value=4, max_value=24, value=int(current_device.get("min_on_blocks", 44) / 4), step=1)
-    max_off_hours = st.slider("Maximal avstängning i rad (timmar)", min_value=1, max_value=6, value=int(current_device.get("max_off_blocks", 12) / 4), step=1)
+    is_thermostat = current_device.get("type") == "thermostat"
     
-    st.divider()
-    cold_temp_threshold = st.number_input("Gräns för kyla (°C)", min_value=-30, max_value=10, value=current_device.get("cold_temp_threshold", 0))
-    min_minutes_cold = st.select_slider("Minst antal minuter körtid per timme vid kyla", options=[0, 15, 30, 45, 60], value=current_device.get("min_minutes_cold", 15))
+    if is_thermostat:
+        st.write("### 🌡️ Termostatinställningar (Börvärden)")
+        target_temp_high = st.number_input("Hög temperatur (Komfort / Aktiv när billigt) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
+        target_temp_low = st.number_input("Låg temperatur (Eco / Grundskydd när dyrt) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
+        
+        st.divider()
+        min_on_hours = 12
+        max_off_hours = 4
+        cold_temp_threshold = 0
+        min_minutes_cold = 15
+    else:
+        min_on_hours = st.slider("Minsta totala körtid per dygn (timmar)", min_value=4, max_value=24, value=int(current_device.get("min_on_blocks", 44) / 4), step=1)
+        max_off_hours = st.slider("Maximal avstängning i rad (timmar)", min_value=1, max_value=6, value=int(current_device.get("max_off_blocks", 12) / 4), step=1)
+        
+        st.divider()
+        cold_temp_threshold = st.number_input("Gräns för kyla (°C)", min_value=-30, max_value=10, value=current_device.get("cold_temp_threshold", 0))
+        min_minutes_cold = st.select_slider("Minst antal minuter körtid per timme vid kyla", options=[0, 15, 30, 45, 60], value=current_device.get("min_minutes_cold", 15))
 
     st.divider()
     force_override = st.radio("Driftläge", options=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
     if st.button("💾 Spara enhetsinställningar", type="primary"):
-        current_device.update({
-            "min_on_blocks": min_on_hours * 4,
-            "max_off_blocks": max_off_hours * 4,
-            "cold_temp_threshold": cold_temp_threshold,
-            "min_minutes_cold": min_minutes_cold,
-            "force_override": force_override
-        })
+        if is_thermostat:
+            current_device.update({
+                "target_temp_high": target_temp_high,
+                "target_temp_low": target_temp_low,
+                "force_override": force_override
+            })
+        else:
+            current_device.update({
+                "min_on_blocks": min_on_hours * 4,
+                "max_off_blocks": max_off_hours * 4,
+                "cold_temp_threshold": cold_temp_threshold,
+                "min_minutes_cold": min_minutes_cold,
+                "force_override": force_override
+            })
         save_config(config)
         st.cache_data.clear()
         st.rerun()
 
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
-    st.subheader(f"Planerat elschema för {current_house.get('name')}")
+    is_thermostat = current_device.get("type") == "thermostat"
+    st.subheader(f"Planerat elschema & temperaturprofil för {current_house.get('name')}")
     
     now = datetime.now(sweden_tz)
     today_str = now.strftime("%Y-%m-%d")
@@ -474,16 +513,32 @@ with tab3:
             for m in [0, 15, 30, 45]:
                 times.append(f"{h:02d}:{m:02d}")
 
-        df_view = pd.DataFrame({
-            "Tid": times,
-            "Pris (öre/kWh)": prices[:len(times)],
-            "Temperatur (°C)": temp_96[:len(times)],
-            "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
-            "status_num": [1 if s else 0 for s in schedule[:len(times)]]
-        })
+        if is_thermostat:
+            t_high = float(current_device.get("target_temp_high", 10.0))
+            t_low = float(current_device.get("target_temp_low", 6.0))
+            status_vals = [t_high if s else t_low for s in schedule[:len(times)]]
+            status_labels = [f"{v}°C" for v in status_vals]
+            df_view = pd.DataFrame({
+                "Tid": times,
+                "Pris (öre/kWh)": prices[:len(times)],
+                "Utetemperatur (°C)": temp_96[:len(times)],
+                "Måltemperatur": status_labels,
+                "status_num": status_vals
+            })
+        else:
+            df_view = pd.DataFrame({
+                "Tid": times,
+                "Pris (öre/kWh)": prices[:len(times)],
+                "Utetemperatur (°C)": temp_96[:len(times)],
+                "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
+                "status_num": [1 if s else 0 for s in schedule[:len(times)]]
+            })
 
         dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
-        pa_mask = df_view["status_num"] == 1
+        if is_thermostat:
+            pa_mask = df_view["status_num"] >= float(current_device.get("target_temp_high", 10.0))
+        else:
+            pa_mask = df_view["status_num"] == 1
 
         if pa_mask.any():
             valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
@@ -498,7 +553,7 @@ with tab3:
         with col2:
             diff = dygn_snittpris - valda_snittpris
             st.metric(
-                label="Snittpris vid körtid (PÅ)",
+                label="Snittpris vid aktiv drifttid",
                 value=f"{valda_snittpris:.1f} öre",
                 delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
                 delta_color="normal" if diff >= 0 else "inverse"
@@ -509,17 +564,28 @@ with tab3:
         st.divider()
 
         fig_view = make_subplots(specs=[[{"secondary_y": True}]])
-        status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
         
-        fig_view.add_trace(
-            go.Scatter(
-                x=df_view["Tid"], y=df_view["status_num"],
-                name="Planerad Status", mode="lines+markers",
-                line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
-                marker=dict(size=8, color=status_colors)
-            ),
-            secondary_y=True
-        )
+        if is_thermostat:
+            fig_view.add_trace(
+                go.Scatter(
+                    x=df_view["Tid"], y=df_view["status_num"],
+                    name="Estimerad Måltemperatur (°C)", mode="lines+markers",
+                    line=dict(shape="hv", color="#2ecc71", width=2),
+                    marker=dict(size=6, color="#2980b9")
+                ),
+                secondary_y=True
+            )
+        else:
+            status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+            fig_view.add_trace(
+                go.Scatter(
+                    x=df_view["Tid"], y=df_view["status_num"],
+                    name="Planerad Status", mode="lines+markers",
+                    line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
+                    marker=dict(size=8, color=status_colors)
+                ),
+                secondary_y=True
+            )
 
         fig_view.add_trace(
             go.Scatter(
@@ -532,8 +598,8 @@ with tab3:
 
         fig_view.add_trace(
             go.Scatter(
-                x=df_view["Tid"], y=df_view["Temperatur (°C)"],
-                name="Prognos Temp (°C)", mode="lines",
+                x=df_view["Tid"], y=df_view["Utetemperatur (°C)"],
+                name="Prognos Utetemp (°C)", mode="lines",
                 line=dict(color="#ffa726", width=2, dash="dot")
             ),
             secondary_y=False
@@ -545,13 +611,17 @@ with tab3:
             height=420,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        fig_view.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
-        fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
+        fig_view.update_yaxes(title_text="Elpris (öre) & Utetemp (°C)", secondary_y=False)
+        if is_thermostat:
+            fig_view.update_yaxes(title_text="Måltemperatur (°C)", secondary_y=True)
+        else:
+            fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
 
         st.plotly_chart(fig_view, width='stretch')
 
         with st.expander("Visa tabell med samtliga kvartar"):
-            st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
+            cols_to_display = ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Måltemperatur"] if is_thermostat else ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Status"]
+            st.dataframe(df_view[cols_to_display], width='stretch')
 
 # --- TAB 4: ADMIN / CRUD ---
 with tab4:
@@ -611,13 +681,20 @@ with tab4:
                 "device_id": dev_tuya_id,
                 "name": dev_name,
                 "type": dev_type,
-                "min_on_blocks": 44,
-                "max_off_blocks": 12,
-                "price_cap": 50.0,
-                "cold_temp_threshold": 0,
-                "min_minutes_cold": 15,
                 "force_override": "AUTO"
             }
+            if dev_type == "thermostat":
+                new_dev["target_temp_high"] = 10.0
+                new_dev["target_temp_low"] = 6.0
+            else:
+                new_dev.update({
+                    "min_on_blocks": 44,
+                    "max_off_blocks": 12,
+                    "price_cap": 50.0,
+                    "cold_temp_threshold": 0,
+                    "min_minutes_cold": 15
+                })
+
             if "devices" not in current_house:
                 current_house["devices"] = []
             current_house["devices"].append(new_dev)

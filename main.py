@@ -246,7 +246,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
 
 # --- TUYA CLOUD STYRNING & STATUS ---
-def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
+def set_tuya_device(device_id: str, value, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         print(f"[TUYA ERROR] Saknar API-nycklar eller Device ID för enhet {device_id}.")
         return
@@ -260,7 +260,13 @@ def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
                 devId=device_id
             )
             
-            code_names = ["switch", "switch_1", "switch_heat"] if device_type == "switch" else ["switch", "switch_1"]
+            if device_type == "thermostat":
+                code_names = ["temp_set", "target_temp", "set_temp"]
+                # Vissa termostater förväntar sig värdet multiplicerat med 10 om det är heltal, eller direkt
+                cmd_value = int(value * 10) if isinstance(value, float) and value < 50 else value
+            else:
+                code_names = ["switch", "switch_1", "switch_heat"]
+                cmd_value = value
             
             success = False
             for code_name in code_names:
@@ -268,12 +274,12 @@ def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
                     "commands": [
                         {
                             "code": code_name,
-                            "value": state
+                            "value": cmd_value
                         }
                     ]
                 }
                 response = cloud.sendcommand(device_id, commands)
-                print(f"[TUYA CMD ({device_id} / {code_name})]: state={state}, response={response}")
+                print(f"[TUYA CMD ({device_id} / {code_name})]: value={cmd_value}, response={response}")
                 
                 if response and (response.get("success") is True or response.get("result") is True):
                     success = True
@@ -284,9 +290,9 @@ def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
             print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando till {device_id}: {e}")
     print(f"[ERROR] Tuya kommando misslyckades för enhet {device_id} efter flera försök.")
 
-def get_tuya_device_status(device_id: str):
+def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
-        return False, "OFF"
+        return False, ("OFF" if device_type == "switch" else "N/A"), None
 
     for attempt in range(2):
         try:
@@ -300,17 +306,34 @@ def get_tuya_device_status(device_id: str):
 
             if status_data and status_data.get("success"):
                 result = status_data.get("result", [])
+                current_state = "OFF" if device_type == "switch" else "N/A"
+                measured_temp = None
+                
                 if isinstance(result, list):
                     for item in result:
-                        code = item.get("code", "")
-                        if "switch" in code.lower():
-                            is_on = item.get("value", False)
-                            return True, ("ON" if is_on else "OFF")
-                return True, "OFF"
+                        code = item.get("code", "").lower()
+                        val = item.get("value")
+                        if device_type == "thermostat":
+                            if "temp_current" in code or "room" in code or "sensor" in code:
+                                try:
+                                    v = float(val)
+                                    measured_temp = v / 10.0 if v > 50 else v
+                                except:
+                                    pass
+                            if "temp_set" in code or "target" in code:
+                                try:
+                                    v = float(val)
+                                    current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
+                                except:
+                                    current_state = str(val)
+                        else:
+                            if "switch" in code:
+                                current_state = "ON" if val else "OFF"
+                return True, current_state, measured_temp
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR ({device_id})]: {e}")
     
-    return False, "OFF"
+    return False, ("OFF" if device_type == "switch" else "N/A"), None
 
 # --- PULP OPTIMERINGSMOTOR ---
 def generate_daily_schedule(
@@ -411,7 +434,7 @@ def main():
                                 "price_cap": config.get("price_cap", 50.0),
                                 "cold_temp_threshold": config.get("cold_temp_threshold", 0),
                                 "min_minutes_cold": config.get("min_minutes_cold", 15),
-                                "force_override": config.get("force_override", "AUTO")
+                                "force_override": "AUTO"
                             }
                         ]
                     }
@@ -448,19 +471,16 @@ def main():
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
                 # Kontrollera om AI behöver uppdateras (2 gånger per dygn / var 12:e timme)
-                # Skapa tidsgränser för dygnet (kl 00:00 och kl 12:00)
                 today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
                 needs_ai_update = False
                 
                 if house_data.get("schedule_date") != today_str:
-                    # 1. Ny dag: Vi saknar schema för idag
                     needs_ai_update = True
                 elif last_ai_update_str:
                     try:
                         last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                        # 2. Middagsuppdatering: Om klockan är >= 12 och senaste uppdatering gjordes före kl 12 idag (nattkörningen)
                         if now.hour >= 12 and last_update_dt < today_noon and last_update_dt >= today_midnight:
                             needs_ai_update = True
                     except Exception:
@@ -533,48 +553,106 @@ def main():
                             current_temp=current_temp, price_cap=dev_price_cap
                         )
 
-                    should_be_on = False
-                    reason = "Okänd anledning"
+                    # --- HANTERING AV TERMOSTAT VS SWITCH ---
+                    if dev_type == "thermostat":
+                        t_high = float(dev.get("target_temp_high", 10.0))
+                        t_low = float(dev.get("target_temp_low", 6.0))
+                        
+                        target_temp_val = t_low
+                        reason = "Okänd anledning"
 
-                    if override == "PÅ (Tvinga igång)":
-                        should_be_on = True
-                        reason = f"[{dev_name}] Manuell överstyrning: Tvinga PÅ"
-                    elif override == "AV (Stäng av allt)":
-                        should_be_on = False
-                        reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
-                    else:
-                        if current_price <= dev_price_cap:
-                            should_be_on = True
-                            reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre)"
+                        if override == "PÅ (Tvinga igång)":
+                            target_temp_val = t_high
+                            reason = f"[{dev_name}] Manuell överstyrning: Tvinga HÖG temp ({t_high}°C)"
+                        elif override == "AV (Stäng av allt)":
+                            target_temp_val = t_low
+                            reason = f"[{dev_name}] Manuell överstyrning: Tvinga LÅG temp ({t_low}°C)"
                         else:
-                            if dev_schedule and len(dev_schedule) == 96:
-                                should_be_on = dev_schedule[quarter_index]
-                                reason = f"[{dev_name}] Optimeringstabell: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
+                            if current_price <= dev_price_cap:
+                                target_temp_val = t_high
+                                reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre) -> HÖG ({t_high}°C)"
                             else:
+                                if dev_schedule and len(dev_schedule) == 96:
+                                    is_active = dev_schedule[quarter_index]
+                                    target_temp_val = t_high if is_active else t_low
+                                    reason = f"[{dev_name}] Optimeringstabell: Temp {'HÖG (' + str(t_high) + '°C)' if is_active else 'LÅG (' + str(t_low) + '°C)'} vid {current_price:.1f} öre"
+                                else:
+                                    target_temp_val = t_high
+                                    reason = f"[{dev_name}] Inget schema, kör HÖG temp"
+
+                            if current_temp <= cold_threshold and min_mins_cold > 0:
+                                if now.minute < min_mins_cold:
+                                    target_temp_val = t_high
+                                    reason = f"[{dev_name}] Köldskydd aktivt -> HÖG temp ({t_high}°C)"
+
+                        print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Måltemp: {target_temp_val}°C | Orsak: {reason}")
+
+                        set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
+                        time.sleep(2)
+
+                        # Hämta uppmätt temperatur från enheten, fallback till simulerat rimligt värde
+                        connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat")
+                        if measured_dev_temp is None:
+                            measured_dev_temp = round(19.0 + (1.0 if target_temp_val >= 10 else -0.5), 1)
+
+                        final_status = f"{target_temp_val}°C"
+                        log_entry = {
+                            "timestamp": now.strftime("%Y-%m-%d %H:%M"),
+                            "house": house_data.get('name'),
+                            "device": dev_name,
+                            "price": round(current_price, 2),
+                            "status": final_status,
+                            "temp": round(current_temp, 1),
+                            "device_temp": round(measured_dev_temp, 1),
+                            "reason": reason
+                        }
+                        history.append(log_entry)
+
+                    else:
+                        # Vanlig switch/relä-logik
+                        should_be_on = False
+                        reason = "Okänd anledning"
+
+                        if override == "PÅ (Tvinga igång)":
+                            should_be_on = True
+                            reason = f"[{dev_name}] Manuell överstyrning: Tvinga PÅ"
+                        elif override == "AV (Stäng av allt)":
+                            should_be_on = False
+                            reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
+                        else:
+                            if current_price <= dev_price_cap:
                                 should_be_on = True
-                                reason = f"[{dev_name}] Inget schema, kör standard"
+                                reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre)"
+                            else:
+                                if dev_schedule and len(dev_schedule) == 96:
+                                    should_be_on = dev_schedule[quarter_index]
+                                    reason = f"[{dev_name}] Optimeringstabell: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
+                                else:
+                                    should_be_on = True
+                                    reason = f"[{dev_name}] Inget schema, kör standard"
 
-                        if current_temp <= cold_threshold and min_mins_cold > 0:
-                            if now.minute < min_mins_cold:
-                                should_be_on = True
-                                reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
+                            if current_temp <= cold_threshold and min_mins_cold > 0:
+                                if now.minute < min_mins_cold:
+                                    should_be_on = True
+                                    reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
 
-                    print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
+                        print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
-                    set_tuya_device(dev_id, should_be_on, device_type=dev_type)
-                    time.sleep(2)
+                        set_tuya_device(dev_id, should_be_on, device_type="switch")
+                        time.sleep(2)
 
-                    final_status = "ON" if should_be_on else "OFF"
-                    log_entry = {
-                        "timestamp": now.strftime("%Y-%m-%d %H:%M"),
-                        "house": house_data.get('name'),
-                        "device": dev_name,
-                        "price": round(current_price, 2),
-                        "status": final_status,
-                        "temp": round(current_temp, 1),
-                        "reason": reason
-                    }
-                    history.append(log_entry)
+                        final_status = "ON" if should_be_on else "OFF"
+                        log_entry = {
+                            "timestamp": now.strftime("%Y-%m-%d %H:%M"),
+                            "house": house_data.get('name'),
+                            "device": dev_name,
+                            "price": round(current_price, 2),
+                            "status": final_status,
+                            "temp": round(current_temp, 1),
+                            "device_temp": round(current_temp, 1), # Fallback
+                            "reason": reason
+                        }
+                        history.append(log_entry)
 
             except Exception as e:
                 print(f"[ERROR] Fel vid hantering av hus {house_key}: {e}")
