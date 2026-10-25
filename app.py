@@ -26,7 +26,8 @@ from main import (
     generate_daily_schedule, 
     get_nordpool_price, 
     get_outside_temp, 
-    get_hourly_temp_forecast
+    get_hourly_temp_forecast,
+    get_ai_optimized_parameters
 )
 
 st.set_page_config(page_title="Elstyrning Control Panel", page_icon="⚡", layout="wide")
@@ -146,7 +147,7 @@ if "houses" not in config:
 
 st.title("⚡ Elstyrning & Flerbostadspanel")
 
-# --- SIDOFÄLT: HUS- OCH ENHETSVÄLJARE ---
+# --- SIDOFÄLT: HUS-, ENHETSVÄLJARE OCH FORCERING ---
 with st.sidebar:
     st.write("### 🏠 Välj Hus & Enhet")
     houses = config.get("houses", {})
@@ -179,6 +180,73 @@ with st.sidebar:
     st.divider()
     if st.button("🔄 Uppdatera sida"):
         st.rerun()
+
+    st.write("### ⚡ AI-Styrning")
+    if st.button("🚀 Forcera omräkning (Alla hus)", type="primary"):
+        with st.spinner("Beräknar om scheman och AI-parametrar för samtliga hus..."):
+            try:
+                now = datetime.now(sweden_tz)
+                today_str = now.strftime("%Y-%m-%d")
+                tomorrow_dt = now + timedelta(days=1)
+                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+                for h_key, h_data in houses.items():
+                    h_lat = h_data.get("lat", 63.25)
+                    h_lon = h_data.get("lon", 14.56)
+                    h_zone = h_data.get("zone", "SE2")
+                    h_station = h_data.get("temperatur_nu_station")
+
+                    current_temp = get_outside_temp(station=h_station, lat=h_lat, lon=h_lon)
+                    prices_today = get_nordpool_price(zone=h_zone, target_date=now)
+                    temp_forecast = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
+
+                    devs = h_data.get("devices", [])
+                    ref_dev = devs[0] if devs else {}
+                    def_cap = ref_dev.get("price_cap", 50.0)
+                    def_min_on = ref_dev.get("min_on_blocks", 44)
+                    max_off = ref_dev.get("max_off_blocks", 12)
+                    cold_th = ref_dev.get("cold_temp_threshold", 0)
+                    min_mins = ref_dev.get("min_minutes_cold", 15)
+
+                    # Kör AI för idag
+                    p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
+                        prices_today, temp_forecast, default_price_cap=def_cap, default_min_on_blocks=def_min_on, target_day_label=f"idag ({h_data.get('name')})"
+                    )
+                    daily_sched = generate_daily_schedule(
+                        prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, current_temp=current_temp, price_cap=p_cap_today
+                    )
+
+                    h_data["schedule_date"] = today_str
+                    h_data["daily_schedule"] = daily_sched
+                    h_data["ai_latest_reasoning"] = reasoning_today
+                    h_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+
+                    if ref_dev:
+                        ref_dev["price_cap"] = p_cap_today
+                        ref_dev["min_on_blocks"] = m_blocks_today
+
+                    # Försök hämta för imorgon om de finns
+                    try:
+                        prices_tom = get_nordpool_price(zone=h_zone, target_date=tomorrow_dt)
+                        if len(set(prices_tom)) > 1:
+                            temp_forecast_tom = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=tomorrow_dt)
+                            p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                                prices_tom, temp_forecast_tom, default_price_cap=def_cap, default_min_on_blocks=def_min_on, target_day_label=f"imorgon ({h_data.get('name')})"
+                            )
+                            tom_sched = generate_daily_schedule(
+                                prices_tom, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                            )
+                            h_data["tomorrow_schedule_date"] = tomorrow_str
+                            h_data["tomorrow_schedule"] = tom_sched
+                    except Exception:
+                        pass
+
+                save_config(config)
+                st.cache_data.clear()
+                st.success("Alla hus och scheman har uppdaterats med nya AI-beräkningar!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ett fel uppstod vid AI-omräkning: {e}")
 
 if not current_device:
     st.info("Vänligen lägg till minst en enhet under fliken 'Admin Hus & Enheter'.")
@@ -372,7 +440,6 @@ with tab3:
     
     prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
     
-    # Kolla om morgondagens priser har anlänt (om listan bara innehåller identiska fallback-värden som 50.0 har de inte kommit)
     prices_has_arrived = True
     if is_tomorrow:
         if not prices or len(set(prices)) <= 1:
@@ -485,6 +552,7 @@ with tab3:
 
         with st.expander("Visa tabell med samtliga kvartar"):
             st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
+
 # --- TAB 4: ADMIN / CRUD ---
 with tab4:
     st.subheader("🛠️ Administrera Hus och Enheter")
