@@ -22,13 +22,11 @@ except ImportError:
 # --- KONFIGURATION & MILJÖVARIABLER ---
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") or os.getenv("GIST_TOKEN")
-TEMPERATUR_NU_STATION = os.getenv("TEMPERATUR_NU_STATION", "ostersund")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-# Tuya Cloud API
+# Tuya Cloud API (Master-nycklar)
 TUYA_API_KEY = os.getenv("TUYA_API_KEY")
 TUYA_API_SECRET = os.getenv("TUYA_API_SECRET")
-TUYA_DEVICE_ID = os.getenv("TUYA_DEVICE_ID")
 TUYA_REGION = os.getenv("TUYA_REGION", "eu")
 
 # --- GIST-FUNKTIONER ---
@@ -80,7 +78,7 @@ def save_history(history_data):
     if not GIST_ID:
         return
 
-    trimmed_history = history_data[-200:]
+    trimmed_history = history_data[-300:] # Sparar lite fler loggar när vi har flera enheter
     payload = {
         "files": {
             "history.json": {
@@ -99,7 +97,6 @@ def save_history(history_data):
             print(f"[WARNING] Försök {attempt+1} - Fel vid sparande av history till Gist: {e}")
 
 # --- NORDPOOL API ---
-# --- NORDPOOL API ---
 def get_nordpool_price(zone="SE2", target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
@@ -110,22 +107,18 @@ def get_nordpool_price(zone="SE2", target_date=None):
     day = target_date.strftime("%d")
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     for attempt in range(2):
         try:
-            res = requests.get(url, headers=headers, timeout=10)
-            print(f"[DEBUG] Hämtar elpriser från {url} - Statuskod: {res.status_code}")
-            
+            res = requests.get(url, headers=headers_np, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 if not isinstance(data, list) or len(data) == 0:
-                    print(f"[WARNING] API returnerade tom lista eller ogiltigt format för {month}-{day}")
+                    print(f"[WARNING] API returnerade tom lista för {month}-{day}")
                     break
 
                 prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-                print(f"[DEBUG] Mottog {len(prices)} prisvärden från API.")
-
                 if len(prices) == 96:
                     return prices
                 elif len(prices) == 24:
@@ -134,19 +127,17 @@ def get_nordpool_price(zone="SE2", target_date=None):
                         prices_96.extend([p] * 4)
                     return prices_96
                 else:
-                    # Om det är ett oväntat antal priser, fyll ut eller kapa till 96
                     print(f"[WARNING] Oväntat antal prisvärden ({len(prices)} st). Anpassar till 96 kvartar.")
                     while len(prices) < 96:
                         prices.append(prices[-1])
                     return prices[:96]
             else:
-                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}.")
+                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}")
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} misslyckades vid hämtning av elpriser: {e}")
             if attempt == 1:
-                print(f"[ERROR] Kunde inte hämta elpriser från ElprisetJustNu efter flera försök.")
+                print(f"[ERROR] Kunde inte hämta elpriser efter flera försök.")
         
-    print(f"[ERROR] Kunde inte läsa priser för {month}-{day}, faller tillbaka på standardpris 50.0 öre.")
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
@@ -156,7 +147,6 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
         target_date = datetime.now(sweden_tz)
     
     target_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date, "strftime") else str(target_date)
-
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
     
     for attempt in range(2):
@@ -179,15 +169,12 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
             break
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} misslyckades för Open-Meteo prognos: {e}")
-            if attempt == 1:
-                print(f"[ERROR] Kunde inte hämta timprognos från Open-Meteo efter flera försök.")
     
-    current_t = get_outside_temp()
-    return [current_t] * 24
+    return [5.0] * 24
 
 # --- TEMPERATUR.NU API ---
-def get_outside_temp():
-    url = f"https://www.temperatur.nu/jstemp.php?s={TEMPERATUR_NU_STATION}"
+def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
+    url = f"https://www.temperatur.nu/jstemp.php?s={station}"
     
     for attempt in range(2):
         try:
@@ -209,86 +196,60 @@ def get_outside_temp():
                         return val
             break
         except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu: {e}")
+            print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu ({station}): {e}")
     
-    # Reservlösning om temperatur.nu sviker: Open-Meteo current
+    # Reservlösning via Open-Meteo current
     try:
-        lat, lon = 63.25, 14.56
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
         res_om = requests.get(url_om, timeout=8)
         if res_om.status_code == 200:
             return float(res_om.json()["current"]["temperature_2m"])
-    except Exception as e:
-        print(f"[WARNING] Även reservmätning via Open-Meteo current misslyckades: {e}")
+    except Exception:
+        pass
 
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
-        print("[WARNING] Ingen AI-nyckel tillgänglig, använder standardparametrar.")
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
 
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
-    
-    Här är elpriserna i öre/kWh för varje kvart (96 st) för {target_day_label}:
-    {prices_96}
-    
-    Här är den förväntade utetemperaturen per timme (°C, 24 timmar) för {target_day_label}:
-    {temp_hourly}
-    
-    Din uppgift är att analysera prisbilden och kylan för att bestämma två nyckelparametrar för just detta dygn:
-    1. "price_cap": Pristak i öre/kWh (om priset understiger detta betraktas det som billigt och pannan ska köras).
-    2. "min_on_hours": Totalt antal timmar som värmen absolut minst behöver vara igång under dygnet för att inte huset ska kyla ur.
-
-    Regler och riktlinjer för körtid:
-    - Vid en dygnsmedeltemperatur kring 0 °C bör cirka 7 timmars total körtid räcka.
-    - Om det är kallare ute krävs fler timmar; om det är mildare kan det vara ännu färre.
-    - Om priset har kraftiga dalar ska pristaket sättas så att vi nyttjar dalarna utan att bränna el på topparna.
-    
+    Här är elpriserna (96 kvartar) för {target_day_label}: {prices_96}
+    Här är utetemperaturen (24h): {temp_hourly}
     Svara ENBART med ett giltigt JSON-objekt enligt detta format:
-    {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring på 1-2 meningar>"}}
+    {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring>"}}
     """
 
-    max_retries = 3
-    retry_delay = 5
+    try:
+        if GEMINI_AVAILABLE == "genai_new":
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            raw_text = response.text
+        elif GEMINI_AVAILABLE == "genai_old":
+            genai_old.configure(api_key=GEMINI_API_KEY)
+            model = genai_old.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            raw_text = response.text
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw_text = ""
-            if GEMINI_AVAILABLE == "genai_new":
-                client = genai.Client(api_key=GEMINI_API_KEY)
-                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-                raw_text = response.text
-            elif GEMINI_AVAILABLE == "genai_old":
-                genai_old.configure(api_key=GEMINI_API_KEY)
-                model = genai_old.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(prompt)
-                raw_text = response.text
+        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json)
+        
+        price_cap = float(data.get("price_cap", default_price_cap))
+        min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
+        motivering = data.get("motivering", "AI-beräkning utförd.")
+        
+        return price_cap, min_on_blocks, motivering
 
-            clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-            data = json.loads(clean_json)
-            
-            price_cap = float(data.get("price_cap", default_price_cap))
-            min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
-            motivering = data.get("motivering", "AI-beräkning utförd.")
-            
-            return price_cap, min_on_blocks, motivering
-
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[AI ERROR] Försök {attempt}/{max_retries} misslyckades: {error_msg}")
-            if attempt < max_retries:
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                return default_price_cap, default_min_on_blocks, f"⚠️ AI-fel: {error_msg[:30]}"
-
+    except Exception as e:
+        # Om kvoten är slut (429) eller annat fel, logga en enda gång och använd standard utan att göra flera försök
+        print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/kvot nådd): {str(e)[:50]}")
+        return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
 # --- TUYA CLOUD STYRNING & STATUS ---
-def set_tuya_switch(state: bool):
-    if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
-        print("[TUYA ERROR] Saknar API-nycklar för Tuya.")
+def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
+    if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
+        print(f"[TUYA ERROR] Saknar API-nycklar eller Device ID för enhet {device_id}.")
         return
     
     for attempt in range(2):
@@ -297,11 +258,14 @@ def set_tuya_switch(state: bool):
                 apiRegion=TUYA_REGION,
                 apiKey=TUYA_API_KEY,
                 apiSecret=TUYA_API_SECRET,
-                devId=TUYA_DEVICE_ID
+                devId=device_id
             )
             
+            # Beroende på enhetstyp kan koden variera (switch för reläer/termostater)
+            code_names = ["switch", "switch_1", "switch_heat"] if device_type == "switch" else ["switch", "switch_1"]
+            
             success = False
-            for code_name in ["switch", "switch_1"]:
+            for code_name in code_names:
                 commands = {
                     "commands": [
                         {
@@ -310,8 +274,8 @@ def set_tuya_switch(state: bool):
                         }
                     ]
                 }
-                response = cloud.sendcommand(TUYA_DEVICE_ID, commands)
-                print(f"[TUYA CMD ({code_name})]: state={state}, response={response}")
+                response = cloud.sendcommand(device_id, commands)
+                print(f"[TUYA CMD ({device_id} / {code_name})]: state={state}, response={response}")
                 
                 if response and (response.get("success") is True or response.get("result") is True):
                     success = True
@@ -319,11 +283,11 @@ def set_tuya_switch(state: bool):
             if success:
                 return
         except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando: {e}")
-    print("[ERROR] Tuya kommando misslyckades efter flera försök.")
+            print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando till {device_id}: {e}")
+    print(f"[ERROR] Tuya kommando misslyckades för enhet {device_id} efter flera försök.")
 
-def get_tuya_device_status():
-    if not all([TUYA_API_KEY, TUYA_API_SECRET, TUYA_DEVICE_ID]):
+def get_tuya_device_status(device_id: str):
+    if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         return False, "OFF"
 
     for attempt in range(2):
@@ -332,9 +296,9 @@ def get_tuya_device_status():
                 apiRegion=TUYA_REGION,
                 apiKey=TUYA_API_KEY,
                 apiSecret=TUYA_API_SECRET,
-                devId=TUYA_DEVICE_ID
+                devId=device_id
             )
-            status_data = cloud.getstatus(TUYA_DEVICE_ID)
+            status_data = cloud.getstatus(device_id)
 
             if status_data and status_data.get("success"):
                 result = status_data.get("result", [])
@@ -346,7 +310,7 @@ def get_tuya_device_status():
                             return True, ("ON" if is_on else "OFF")
                 return True, "OFF"
         except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR]: {e}")
+            print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR ({device_id})]: {e}")
     
     return False, "OFF"
 
@@ -399,7 +363,7 @@ def generate_daily_schedule(
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
 
-# --- HUVUDLOGIK ---
+# --- HUVUDLOGIK (FLERBOSTADSSED) ---
 def main():
     try:
         config, history = load_gist_data()
@@ -411,149 +375,224 @@ def main():
         tomorrow_dt = now + timedelta(days=1)
         tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
+        # Begränsa anropsfrekvens om det körs för ofta
         if history:
             last_entry = history[-1]
             try:
                 last_time = datetime.strptime(last_entry["timestamp"], "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
                 if (now - last_time).total_seconds() / 60 < 8:
                     return
-            except Exception as e:
-                print(f"[WARNING] Kunde inte parsa sista historiktiden: {e}")
+            except Exception:
+                pass
 
-        current_temp = get_outside_temp()
-        
-        max_off = config.get("max_off_blocks", 12)
-        min_on = config.get("min_on_blocks", 44)
-        price_cap = config.get("price_cap", 50.0)
-
-        active_schedule_date = config.get("schedule_date")
-        daily_schedule = config.get("daily_schedule")
-        last_ai_update_str = config.get("last_ai_update")
-        
-        tomorrow_schedule_date = config.get("tomorrow_schedule_date")
-        tomorrow_schedule = config.get("tomorrow_schedule")
-
-        # 1. Kontrollera om vi behöver räkna om (ny dag eller mer än 3 timmar sedan sist)
-        needs_ai_update = False
-        if active_schedule_date != today_str:
-            if tomorrow_schedule_date == today_str and tomorrow_schedule:
-                daily_schedule = tomorrow_schedule
-                active_schedule_date = today_str
-                config["tomorrow_schedule"] = None
-                config["tomorrow_schedule_date"] = None
-            else:
-                needs_ai_update = True
-        elif not last_ai_update_str:
-            needs_ai_update = True
-        else:
-            try:
-                last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                if (now - last_update_dt).total_seconds() >= 3 * 3600:
-                    needs_ai_update = True
-            except Exception as e:
-                print(f"[WARNING] Kunde inte parsa last_ai_update: {e}")
-                needs_ai_update = True
-
-        if needs_ai_update:
-            print("[AI UPDATE] Kör automatisk omräkning av AI-parametrar och schema (3-timmarsintervall eller ny dag)...")
-            prices_today = get_nordpool_price(zone="SE2", target_date=now)
-            temp_forecast = get_hourly_temp_forecast(target_date=now)
-            
-            p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
-                prices_today, temp_forecast, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="idag"
-            )
-            
-            daily_schedule = generate_daily_schedule(
-                prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
-                current_temp=current_temp, price_cap=p_cap
-            )
-            
-            active_schedule_date = today_str
-            config["price_cap"] = p_cap
-            config["min_on_blocks"] = m_blocks
-            config["ai_latest_reasoning"] = reasoning
-            config["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
-
-        config["schedule_date"] = active_schedule_date
-        config["daily_schedule"] = daily_schedule
-        save_config_to_gist(config)
-
-        # 2. Hämta morgondagens schema efter kl 14 (isolerat med try/except så det inte kraschar dagsstyrningen)
-        try:
-            if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
-                prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
-                temp_forecast_tom = get_hourly_temp_forecast(target_date=tomorrow_dt)
-                
-                if len(set(prices_tomorrow)) > 1: 
-                    time.sleep(2)
-                    p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
-                        prices_tomorrow, temp_forecast_tom, default_price_cap=50.0, default_min_on_blocks=min_on, target_day_label="imorgon"
-                    )
-                    new_tomorrow_sched = generate_daily_schedule(
-                        prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
-                    )
-                    config["tomorrow_schedule_date"] = tomorrow_str
-                    config["tomorrow_schedule"] = new_tomorrow_sched
-                    config["ai_latest_reasoning"] = reasoning_tom
-                    save_config_to_gist(config)
-        except Exception as e:
-            print(f"[ERROR] Misslyckades med att generera/spara morgondagens schema: {e}")
-
+        # Hämta elpriser för SE2 en gång för alla hus
         prices_today = get_nordpool_price(zone="SE2", target_date=now)
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
 
-        # Utvärdera styrlogik och skapa tydlig motivering
-        override = config.get("force_override", "AUTO")
-        should_be_on = False
-        reason = "Okänd anledning"
-        
-        cold_threshold = config.get("cold_temp_threshold", 0)
-        min_mins_cold = config.get("min_minutes_cold", 15)
+        # Om konfigurationen använder den gamla platta strukturen, konvertera till houses-format temporärt
+        if "houses" not in config:
+            config = {
+                "houses": {
+                    "default_house": {
+                        "name": "Huvudhuset",
+                        "lat": 63.25,
+                        "lon": 14.56,
+                        "temperatur_nu_station": os.getenv("TEMPERATUR_NU_STATION", "ostersund"),
+                        "schedule_date": config.get("schedule_date"),
+                        "daily_schedule": config.get("daily_schedule"),
+                        "tomorrow_schedule_date": config.get("tomorrow_schedule_date"),
+                        "tomorrow_schedule": config.get("tomorrow_schedule"),
+                        "last_ai_update": config.get("last_ai_update"),
+                        "ai_latest_reasoning": config.get("ai_latest_reasoning"),
+                        "devices": [
+                            {
+                                "id": "dev_1",
+                                "device_id": os.getenv("TUYA_DEVICE_ID"),
+                                "name": "Standard Enhet",
+                                "type": "switch",
+                                "max_off_blocks": config.get("max_off_blocks", 12),
+                                "min_on_blocks": config.get("min_on_blocks", 44),
+                                "price_cap": config.get("price_cap", 50.0),
+                                "cold_temp_threshold": config.get("cold_temp_threshold", 0),
+                                "min_minutes_cold": config.get("min_minutes_cold", 15),
+                                "force_override": config.get("force_override", "AUTO")
+                            }
+                        ]
+                    }
+                }
+            }
 
-        if override == "PÅ (Tvinga igång)":
-            should_be_on = True
-            reason = "Manuell överstyrning: Tvinga PÅ"
-        elif override == "AV (Stäng av allt)":
-            should_be_on = False
-            reason = "Manuell överstyrning: Stäng AV"
-        else:
-            if current_price <= price_cap:
-                should_be_on = True
-                reason = f"Priset ({current_price:.1f} öre) understiger pristak ({price_cap:.1f} öre)"
-            else:
-                if daily_schedule and len(daily_schedule) == 96:
-                    should_be_on = daily_schedule[quarter_index]
-                    reason = f"Optimeringstabell (PuLP): Status är {'PÅ' if should_be_on else 'AV'} vid pris {current_price:.1f} öre"
+        houses = config.get("houses", {})
+        config_updated = False
+
+        # --- LOOPA IGENOM VARJE HUS ---
+        for house_key, house_data in houses.items():
+            try:
+                lat = house_data.get("lat", 63.25)
+                lon = house_data.get("lon", 14.56)
+                station = house_data.get("temperatur_nu_station", "ostersund")
+                
+                current_temp = get_outside_temp(station=station, lat=lat, lon=lon)
+                temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now)
+
+                devices = house_data.get("devices", [])
+                if not devices:
+                    continue
+
+                # Använd husets första enhet som referens för husets övergripande AI-parametrar (eller genomsnitt)
+                ref_device = devices[0]
+                max_off = ref_device.get("max_off_blocks", 12)
+                min_on = ref_device.get("min_on_blocks", 44)
+                price_cap = ref_device.get("price_cap", 50.0)
+
+                active_schedule_date = house_data.get("schedule_date")
+                daily_schedule = house_data.get("daily_schedule")
+                last_ai_update_str = house_data.get("last_ai_update")
+                
+                tomorrow_schedule_date = house_data.get("tomorrow_schedule_date")
+                tomorrow_schedule = house_data.get("tomorrow_schedule")
+
+                # Kontrollera om AI behöver uppdateras för detta hus
+                needs_ai_update = False
+                if active_schedule_date != today_str:
+                    if tomorrow_schedule_date == today_str and tomorrow_schedule:
+                        daily_schedule = tomorrow_schedule
+                        active_schedule_date = today_str
+                        house_data["tomorrow_schedule"] = None
+                        house_data["tomorrow_schedule_date"] = None
+                        config_updated = True
+                    else:
+                        needs_ai_update = True
+                elif not last_ai_update_str:
+                    needs_ai_update = True
                 else:
-                    should_be_on = True
-                    reason = "Inget schema tillgängligt, kör som standard"
+                    try:
+                        last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
+                        if (now - last_update_dt).total_seconds() >= 3 * 3600:
+                            needs_ai_update = True
+                    except Exception:
+                        needs_ai_update = True
 
-            if current_temp <= cold_threshold and min_mins_cold > 0:
-                if now.minute < min_mins_cold:
-                    should_be_on = True
-                    reason = f"Köldskydd aktivt (Temp: {current_temp}°C <= {cold_threshold}°C, minut {now.minute} < {min_mins_cold})"
+                if needs_ai_update:
+                    print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
+                    p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                        prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"idag ({house_data.get('name')})"
+                    )
+                    
+                    daily_schedule = generate_daily_schedule(
+                        prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
+                        current_temp=current_temp, price_cap=p_cap
+                    )
+                    
+                    active_schedule_date = today_str
+                    # Uppdatera refernsenhetens värden eller husnivå
+                    ref_device["price_cap"] = p_cap
+                    ref_device["min_on_blocks"] = m_blocks
+                    house_data["ai_latest_reasoning"] = reasoning
+                    house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                    config_updated = True
 
-        print(f"[STYRLED] Tid: {now.strftime('%H:%M')} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
+                house_data["schedule_date"] = active_schedule_date
+                house_data["daily_schedule"] = daily_schedule
 
-        # Skicka kommando till reläet
-        set_tuya_switch(should_be_on)
-        
-        # Ge Tuya-molnet 5 sekund att synka
-        time.sleep(5)
-        
-        # Sätt status baserat på vad vi skickade (för att slippa att molnet släpar efter i loggen)
-        final_status = "ON" if should_be_on else "OFF"
-        
-        log_entry = {
-            "timestamp": now.strftime("%Y-%m-%d %H:%M"),
-            "price": round(current_price, 2),
-            "status": final_status,
-            "temp": round(current_temp, 1),
-            "reason": reason
-        }
-        history.append(log_entry)
+                # Hämta morgondagens schema efter kl 14
+                try:
+                    if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
+                        tomorrow_dt = now + timedelta(days=1)
+                        prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+                        temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
+                        
+                        if len(set(prices_tomorrow)) > 1: 
+                            time.sleep(1)
+                            p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                                prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"imorgon ({house_data.get('name')})"
+                            )
+                            new_tomorrow_sched = generate_daily_schedule(
+                                prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                            )
+                            house_data["tomorrow_schedule_date"] = tomorrow_str
+                            house_data["tomorrow_schedule"] = new_tomorrow_sched
+                            house_data["ai_latest_reasoning"] = reasoning_tom
+                            config_updated = True
+                except Exception as e:
+                    print(f"[ERROR] Misslyckades med morgondagens schema för {house_key}: {e}")
+
+                # --- LOOPA IGENOM HUSETS ENHETER ---
+                for dev in devices:
+                    dev_id = dev.get("device_id")
+                    dev_name = dev.get("name", "Enhet")
+                    dev_type = dev.get("type", "switch")
+                    dev_price_cap = dev.get("price_cap", price_cap)
+                    dev_max_off = dev.get("max_off_blocks", max_off)
+                    dev_min_on = dev.get("min_on_blocks", min_on)
+                    cold_threshold = dev.get("cold_temp_threshold", 0)
+                    min_mins_cold = dev.get("min_minutes_cold", 15)
+                    override = dev.get("force_override", "AUTO")
+
+                    if not dev_id:
+                        continue
+
+                    # Om enheten har egna inställningar kan vi generera ett eget schema vid behov
+                    dev_schedule = daily_schedule
+                    if dev_max_off != max_off or dev_min_on != min_on or dev_price_cap != price_cap:
+                        dev_schedule = generate_daily_schedule(
+                            prices_today, max_off_blocks=dev_max_off, min_on_blocks=dev_min_on, 
+                            current_temp=current_temp, price_cap=dev_price_cap
+                        )
+
+                    should_be_on = False
+                    reason = "Okänd anledning"
+
+                    if override == "PÅ (Tvinga igång)":
+                        should_be_on = True
+                        reason = f"[{dev_name}] Manuell överstyrning: Tvinga PÅ"
+                    elif override == "AV (Stäng av allt)":
+                        should_be_on = False
+                        reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
+                    else:
+                        if current_price <= dev_price_cap:
+                            should_be_on = True
+                            reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre)"
+                        else:
+                            if dev_schedule and len(dev_schedule) == 96:
+                                should_be_on = dev_schedule[quarter_index]
+                                reason = f"[{dev_name}] Optimeringstabell: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
+                            else:
+                                should_be_on = True
+                                reason = f"[{dev_name}] Inget schema, kör standard"
+
+                        if current_temp <= cold_threshold and min_mins_cold > 0:
+                            if now.minute < min_mins_cold:
+                                should_be_on = True
+                                reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
+
+                    print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
+
+                    # Skicka kommando till Tuya för denna enhet
+                    set_tuya_device(dev_id, should_be_on, device_type=dev_type)
+                    time.sleep(2) # Pausa kort mellan enhetsanrop
+
+                    final_status = "ON" if should_be_on else "OFF"
+                    log_entry = {
+                        "timestamp": now.strftime("%Y-%m-%d %H:%M"),
+                        "house": house_data.get('name'),
+                        "device": dev_name,
+                        "price": round(current_price, 2),
+                        "status": final_status,
+                        "temp": round(current_temp, 1),
+                        "reason": reason
+                    }
+                    history.append(log_entry)
+
+            except Exception as e:
+                print(f"[ERROR] Fel vid hantering av hus {house_key}: {e}")
+
+        if config_updated:
+            save_config_to_gist(config)
+
         save_history(history)
+
     except Exception as e:
         print(f"[FATAL ERROR] Skriptet kraschade i main(): {e}")
 
