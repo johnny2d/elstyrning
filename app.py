@@ -294,7 +294,6 @@ with tab1:
             df['time'] = pd.to_datetime(df['timestamp'])
             
             if is_thermostat:
-                # Robust parsing av statusvärden som kan innehålla både temperaturer och gamla ON/OFF-strängar
                 def parse_status_val(val):
                     if pd.isna(val):
                         return float(current_device.get("target_temp_low", 6.0))
@@ -476,165 +475,184 @@ with tab2:
 
 # --- TAB 3: SCHEMA & PRISER ---
 with tab3:
-    is_thermostat = current_device.get("type") == "thermostat"
-    st.subheader(f"Planerat elschema & temperaturprofil för {current_house.get('name')}")
+    st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name')}")
     
-    now = datetime.now(sweden_tz)
-    today_str = now.strftime("%Y-%m-%d")
-    tomorrow_dt = now + timedelta(days=1)
-    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
-
-    selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True)
-
-    is_tomorrow = "Imorgon" in selected_day_tab
-    target_dt = now if not is_tomorrow else tomorrow_dt
-    house_zone = current_house.get("zone", "SE2")
-    
-    prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
-    
-    prices_has_arrived = True
-    if is_tomorrow:
-        if not prices or len(set(prices)) <= 1:
-            prices_has_arrived = False
-
-    if is_tomorrow and not prices_has_arrived:
-        st.info(f"⏳ **Morgondagens elprisprognos har inte kommit ännu.**\n\nElpriset Just Nu brukar publicera morgondagens priser dagligen runt kl. **13:00–14:00**. Vänligen återkom efter det för att se det optimerade schemat och prognosen för {tomorrow_str}.")
+    # Lokal enhetsväljare i tab 3 om det finns flera enheter
+    house_devices = current_house.get("devices", [])
+    if len(house_devices) > 1:
+        dev_names = [d.get("name", d.get("id")) for d in house_devices]
+        selected_tab3_dev_idx = st.selectbox(
+            "Välj enhet att granska i schema:", 
+            range(len(house_devices)), 
+            format_func=lambda i: dev_names[i],
+            key="tab3_device_selector"
+        )
+        target_device = house_devices[selected_tab3_dev_idx]
     else:
-        temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
+        target_device = current_device if current_device else (house_devices[0] if house_devices else {})
 
-        temp_96 = []
-        for t_val in temp_forecast:
-            temp_96.extend([t_val] * 4)
-        while len(temp_96) < 96:
-            temp_96.append(temp_96[-1] if temp_96 else 0.0)
-
-        if not is_tomorrow:
-            schedule = current_house.get("daily_schedule")
-            if not schedule or len(schedule) != 96:
-                schedule = [True] * 96
-        else:
-            schedule = current_house.get("tomorrow_schedule")
-            if current_house.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
-                max_off = current_device.get("max_off_blocks", 12)
-                min_on = current_device.get("min_on_blocks", 44)
-                price_cap = current_device.get("price_cap", 50.0)
-                current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp_val, price_cap=price_cap)
-
-        times = []
-        for h in range(24):
-            for m in [0, 15, 30, 45]:
-                times.append(f"{h:02d}:{m:02d}")
-
-        if is_thermostat:
-            t_high = float(current_device.get("target_temp_high", 10.0))
-            t_low = float(current_device.get("target_temp_low", 6.0))
-            status_vals = [t_high if s else t_low for s in schedule[:len(times)]]
-            status_labels = [f"{v}°C" for v in status_vals]
-            df_view = pd.DataFrame({
-                "Tid": times,
-                "Pris (öre/kWh)": prices[:len(times)],
-                "Utetemperatur (°C)": temp_96[:len(times)],
-                "Måltemperatur": status_labels,
-                "status_num": status_vals
-            })
-        else:
-            df_view = pd.DataFrame({
-                "Tid": times,
-                "Pris (öre/kWh)": prices[:len(times)],
-                "Utetemperatur (°C)": temp_96[:len(times)],
-                "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
-                "status_num": [1 if s else 0 for s in schedule[:len(times)]]
-            })
-
-        dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
-        if is_thermostat:
-            pa_mask = df_view["status_num"] >= float(current_device.get("target_temp_high", 10.0))
-        else:
-            pa_mask = df_view["status_num"] == 1
-
-        if pa_mask.any():
-            valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
-            besparing_pct = ((dygn_snittpris - valda_snittpris) / dygn_snittpris) * 100 if dygn_snittpris > 0 else 0.0
-        else:
-            valda_snittpris = 0.0
-            besparing_pct = 0.0
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric(label="Dygnets snittpris", value=f"{dygn_snittpris:.1f} öre")
-        with col2:
-            diff = dygn_snittpris - valda_snittpris
-            st.metric(
-                label="Snittpris vid aktiv drifttid",
-                value=f"{valda_snittpris:.1f} öre",
-                delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
-                delta_color="normal" if diff >= 0 else "inverse"
-            )
-        with col3:
-            st.metric(label="Optimeringseffekt", value=f"{besparing_pct:.1f}% billigare")
-
-        st.divider()
-
-        fig_view = make_subplots(specs=[[{"secondary_y": True}]])
+    if not target_device:
+        st.warning("Ingen enhet att visa schema för.")
+    else:
+        is_thermostat = target_device.get("type") == "thermostat"
+        st.markdown(f"**Visar profil för enhet:** `{target_device.get('name')}` ({'Termostat' if is_thermostat else 'Switch'})")
         
-        if is_thermostat:
+        now = datetime.now(sweden_tz)
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_dt = now + timedelta(days=1)
+        tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+        selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True, key="tab3_day_radio")
+
+        is_tomorrow = "Imorgon" in selected_day_tab
+        target_dt = now if not is_tomorrow else tomorrow_dt
+        house_zone = current_house.get("zone", "SE2")
+        
+        prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
+        
+        prices_has_arrived = True
+        if is_tomorrow:
+            if not prices or len(set(prices)) <= 1:
+                prices_has_arrived = False
+
+        if is_tomorrow and not prices_has_arrived:
+            st.info(f"⏳ **Morgondagens elprisprognos har inte kommit ännu.**\n\nElpriset Just Nu brukar publicera morgondagens priser dagligen runt kl. **13:00–14:00**. Vänligen återkom efter det för att se det optimerade schemat och prognosen för {tomorrow_str}.")
+        else:
+            temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
+
+            temp_96 = []
+            for t_val in temp_forecast:
+                temp_96.extend([t_val] * 4)
+            while len(temp_96) < 96:
+                temp_96.append(temp_96[-1] if temp_96 else 0.0)
+
+            if not is_tomorrow:
+                schedule = current_house.get("daily_schedule")
+                if not schedule or len(schedule) != 96:
+                    schedule = [True] * 96
+            else:
+                schedule = current_house.get("tomorrow_schedule")
+                if current_house.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
+                    max_off = target_device.get("max_off_blocks", 12)
+                    min_on = target_device.get("min_on_blocks", 44)
+                    price_cap = target_device.get("price_cap", 50.0)
+                    current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+                    schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp_val, price_cap=price_cap)
+
+            times = []
+            for h in range(24):
+                for m in [0, 15, 30, 45]:
+                    times.append(f"{h:02d}:{m:02d}")
+
+            if is_thermostat:
+                t_high = float(target_device.get("target_temp_high", 10.0))
+                t_low = float(target_device.get("target_temp_low", 6.0))
+                status_vals = [t_high if s else t_low for s in schedule[:len(times)]]
+                status_labels = [f"{v}°C" for v in status_vals]
+                df_view = pd.DataFrame({
+                    "Tid": times,
+                    "Pris (öre/kWh)": prices[:len(times)],
+                    "Utetemperatur (°C)": temp_96[:len(times)],
+                    "Måltemperatur": status_labels,
+                    "status_num": status_vals
+                })
+            else:
+                df_view = pd.DataFrame({
+                    "Tid": times,
+                    "Pris (öre/kWh)": prices[:len(times)],
+                    "Utetemperatur (°C)": temp_96[:len(times)],
+                    "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
+                    "status_num": [1 if s else 0 for s in schedule[:len(times)]]
+                })
+
+            dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
+            if is_thermostat:
+                pa_mask = df_view["status_num"] >= float(target_device.get("target_temp_high", 10.0))
+            else:
+                pa_mask = df_view["status_num"] == 1
+
+            if pa_mask.any():
+                valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
+                besparing_pct = ((dygn_snittpris - valda_snittpris) / dygn_snittpris) * 100 if dygn_snittpris > 0 else 0.0
+            else:
+                valda_snittpris = 0.0
+                besparing_pct = 0.0
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="Dygnets snittpris", value=f"{dygn_snittpris:.1f} öre")
+            with col2:
+                diff = dygn_snittpris - valda_snittpris
+                st.metric(
+                    label="Snittpris vid aktiv drifttid",
+                    value=f"{valda_snittpris:.1f} öre",
+                    delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
+                    delta_color="normal" if diff >= 0 else "inverse"
+                )
+            with col3:
+                st.metric(label="Optimeringseffekt", value=f"{besparing_pct:.1f}% billigare")
+
+            st.divider()
+
+            fig_view = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            if is_thermostat:
+                fig_view.add_trace(
+                    go.Scatter(
+                        x=df_view["Tid"], y=df_view["status_num"],
+                        name="Estimerad Måltemperatur (°C)", mode="lines+markers",
+                        line=dict(shape="hv", color="#2ecc71", width=2),
+                        marker=dict(size=6, color="#2980b9")
+                    ),
+                    secondary_y=True
+                )
+            else:
+                status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+                fig_view.add_trace(
+                    go.Scatter(
+                        x=df_view["Tid"], y=df_view["status_num"],
+                        name="Planerad Status", mode="lines+markers",
+                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
+                        marker=dict(size=8, color=status_colors)
+                    ),
+                    secondary_y=True
+                )
+
             fig_view.add_trace(
                 go.Scatter(
-                    x=df_view["Tid"], y=df_view["status_num"],
-                    name="Estimerad Måltemperatur (°C)", mode="lines+markers",
-                    line=dict(shape="hv", color="#2ecc71", width=2),
-                    marker=dict(size=6, color="#2980b9")
+                    x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
+                    name="Elpris (öre/kWh)", mode="lines",
+                    line=dict(color="#29b6f6", width=2)
                 ),
-                secondary_y=True
+                secondary_y=False
             )
-        else:
-            status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+
             fig_view.add_trace(
                 go.Scatter(
-                    x=df_view["Tid"], y=df_view["status_num"],
-                    name="Planerad Status", mode="lines+markers",
-                    line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
-                    marker=dict(size=8, color=status_colors)
+                    x=df_view["Tid"], y=df_view["Utetemperatur (°C)"],
+                    name="Prognos Utetemp (°C)", mode="lines",
+                    line=dict(color="#ffa726", width=2, dash="dot")
                 ),
-                secondary_y=True
+                secondary_y=False
             )
 
-        fig_view.add_trace(
-            go.Scatter(
-                x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
-                name="Elpris (öre/kWh)", mode="lines",
-                line=dict(color="#29b6f6", width=2)
-            ),
-            secondary_y=False
-        )
+            fig_view.update_layout(
+                hovermode="x unified",
+                margin=dict(l=10, r=10, t=30, b=10),
+                height=420,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            fig_view.update_yaxes(title_text="Elpris (öre) & Utetemp (°C)", secondary_y=False)
+            if is_thermostat:
+                fig_view.update_yaxes(title_text="Måltemperatur (°C)", secondary_y=True)
+            else:
+                fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
 
-        fig_view.add_trace(
-            go.Scatter(
-                x=df_view["Tid"], y=df_view["Utetemperatur (°C)"],
-                name="Prognos Utetemp (°C)", mode="lines",
-                line=dict(color="#ffa726", width=2, dash="dot")
-            ),
-            secondary_y=False
-        )
+            st.plotly_chart(fig_view, width='stretch')
 
-        fig_view.update_layout(
-            hovermode="x unified",
-            margin=dict(l=10, r=10, t=30, b=10),
-            height=420,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        fig_view.update_yaxes(title_text="Elpris (öre) & Utetemp (°C)", secondary_y=False)
-        if is_thermostat:
-            fig_view.update_yaxes(title_text="Måltemperatur (°C)", secondary_y=True)
-        else:
-            fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
-
-        st.plotly_chart(fig_view, width='stretch')
-
-        with st.expander("Visa tabell med samtliga kvartar"):
-            cols_to_display = ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Måltemperatur"] if is_thermostat else ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Status"]
-            st.dataframe(df_view[cols_to_display], width='stretch')
+            with st.expander("Visa tabell med samtliga kvartar"):
+                cols_to_display = ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Måltemperatur"] if is_thermostat else ["Tid", "Pris (öre/kWh)", "Utetemperatur (°C)", "Status"]
+                st.dataframe(df_view[cols_to_display], width='stretch')
 
 # --- TAB 4: ADMIN / CRUD ---
 with tab4:
