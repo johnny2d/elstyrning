@@ -448,25 +448,25 @@ def main():
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
                 # Kontrollera om AI behöver uppdateras (2 gånger per dygn / var 12:e timme)
+                # Skapa tidsgränser för dygnet (kl 00:00 och kl 12:00)
+                today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
                 needs_ai_update = False
-                if active_schedule_date != today_str:
-                    if tomorrow_schedule_date == today_str and tomorrow_schedule:
-                        daily_schedule = tomorrow_schedule
-                        active_schedule_date = today_str
-                        house_data["tomorrow_schedule"] = None
-                        house_data["tomorrow_schedule_date"] = None
-                        config_updated = True
-                    else:
-                        needs_ai_update = True
-                elif not last_ai_update_str:
+                
+                if house_data.get("schedule_date") != today_str:
+                    # 1. Ny dag: Vi saknar schema för idag
                     needs_ai_update = True
-                else:
+                elif last_ai_update_str:
                     try:
                         last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                        if (now - last_update_dt).total_seconds() >= 12 * 3600:
+                        # 2. Middagsuppdatering: Om klockan är >= 12 och senaste uppdatering gjordes före kl 12 idag (nattkörningen)
+                        if now.hour >= 12 and last_update_dt < today_noon and last_update_dt >= today_midnight:
                             needs_ai_update = True
                     except Exception:
                         needs_ai_update = True
+                else:
+                    needs_ai_update = True
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
