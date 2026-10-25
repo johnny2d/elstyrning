@@ -366,114 +366,125 @@ with tab3:
 
     selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True)
 
-    target_dt = now if "Idag" in selected_day_tab else tomorrow_dt
+    is_tomorrow = "Imorgon" in selected_day_tab
+    target_dt = now if not is_tomorrow else tomorrow_dt
     house_zone = current_house.get("zone", "SE2")
-    prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
-    temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
-
-    temp_96 = []
-    for t_val in temp_forecast:
-        temp_96.extend([t_val] * 4)
-    while len(temp_96) < 96:
-        temp_96.append(temp_96[-1] if temp_96 else 0.0)
-
-    if "Idag" in selected_day_tab:
-        schedule = current_house.get("daily_schedule")
-        if not schedule or len(schedule) != 96:
-            schedule = [True] * 96
-    else:
-        schedule = current_house.get("tomorrow_schedule")
-        if current_house.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
-            max_off = current_device.get("max_off_blocks", 12)
-            min_on = current_device.get("min_on_blocks", 44)
-            price_cap = current_device.get("price_cap", 50.0)
-            current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-            schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp_val, price_cap=price_cap)
-
-    times = []
-    for h in range(24):
-        for m in [0, 15, 30, 45]:
-            times.append(f"{h:02d}:{m:02d}")
-
-    df_view = pd.DataFrame({
-        "Tid": times,
-        "Pris (öre/kWh)": prices[:len(times)],
-        "Temperatur (°C)": temp_96[:len(times)],
-        "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
-        "status_num": [1 if s else 0 for s in schedule[:len(times)]]
-    })
-
-    dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
-    pa_mask = df_view["status_num"] == 1
-
-    if pa_mask.any():
-        valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
-        besparing_pct = ((dygn_snittpris - valda_snittpris) / dygn_snittpris) * 100 if dygn_snittpris > 0 else 0.0
-    else:
-        valda_snittpris = 0.0
-        besparing_pct = 0.0
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(label="Dygnets snittpris", value=f"{dygn_snittpris:.1f} öre")
-    with col2:
-        diff = dygn_snittpris - valda_snittpris
-        st.metric(
-            label="Snittpris vid körtid (PÅ)",
-            value=f"{valda_snittpris:.1f} öre",
-            delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
-            delta_color="normal" if diff >= 0 else "inverse"
-        )
-    with col3:
-        st.metric(label="Optimeringseffekt", value=f"{besparing_pct:.1f}% billigare")
-
-    st.divider()
-
-    fig_view = make_subplots(specs=[[{"secondary_y": True}]])
-    status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
     
-    fig_view.add_trace(
-        go.Scatter(
-            x=df_view["Tid"], y=df_view["status_num"],
-            name="Planerad Status", mode="lines+markers",
-            line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
-            marker=dict(size=8, color=status_colors)
-        ),
-        secondary_y=True
-    )
+    prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
+    
+    # Kolla om morgondagens priser har anlänt (om listan bara innehåller identiska fallback-värden som 50.0 har de inte kommit)
+    prices_has_arrived = True
+    if is_tomorrow:
+        if not prices or len(set(prices)) <= 1:
+            prices_has_arrived = False
 
-    fig_view.add_trace(
-        go.Scatter(
-            x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
-            name="Elpris (öre/kWh)", mode="lines",
-            line=dict(color="#29b6f6", width=2)
-        ),
-        secondary_y=False
-    )
+    if is_tomorrow and not prices_has_arrived:
+        st.info(f"⏳ **Morgondagens elprisprognos har inte kommit ännu.**\n\nElpriset Just Nu brukar publicera morgondagens priser dagligen runt kl. **13:00–14:00**. Vänligen återkom efter det för att se det optimerade schemat och prognosen för {tomorrow_str}.")
+    else:
+        temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
 
-    fig_view.add_trace(
-        go.Scatter(
-            x=df_view["Tid"], y=df_view["Temperatur (°C)"],
-            name="Prognos Temp (°C)", mode="lines",
-            line=dict(color="#ffa726", width=2, dash="dot")
-        ),
-        secondary_y=False
-    )
+        temp_96 = []
+        for t_val in temp_forecast:
+            temp_96.extend([t_val] * 4)
+        while len(temp_96) < 96:
+            temp_96.append(temp_96[-1] if temp_96 else 0.0)
 
-    fig_view.update_layout(
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=420,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    fig_view.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
-    fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
+        if not is_tomorrow:
+            schedule = current_house.get("daily_schedule")
+            if not schedule or len(schedule) != 96:
+                schedule = [True] * 96
+        else:
+            schedule = current_house.get("tomorrow_schedule")
+            if current_house.get("tomorrow_schedule_date") != tomorrow_str or not schedule:
+                max_off = current_device.get("max_off_blocks", 12)
+                min_on = current_device.get("min_on_blocks", 44)
+                price_cap = current_device.get("price_cap", 50.0)
+                current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+                schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp_val, price_cap=price_cap)
 
-    st.plotly_chart(fig_view, width='stretch')
+        times = []
+        for h in range(24):
+            for m in [0, 15, 30, 45]:
+                times.append(f"{h:02d}:{m:02d}")
 
-    with st.expander("Visa tabell med samtliga kvartar"):
-        st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
+        df_view = pd.DataFrame({
+            "Tid": times,
+            "Pris (öre/kWh)": prices[:len(times)],
+            "Temperatur (°C)": temp_96[:len(times)],
+            "Status": ["PÅ 🟢" if s else "AV 🔴" for s in schedule[:len(times)]],
+            "status_num": [1 if s else 0 for s in schedule[:len(times)]]
+        })
 
+        dygn_snittpris = df_view["Pris (öre/kWh)"].mean()
+        pa_mask = df_view["status_num"] == 1
+
+        if pa_mask.any():
+            valda_snittpris = df_view.loc[pa_mask, "Pris (öre/kWh)"].mean()
+            besparing_pct = ((dygn_snittpris - valda_snittpris) / dygn_snittpris) * 100 if dygn_snittpris > 0 else 0.0
+        else:
+            valda_snittpris = 0.0
+            besparing_pct = 0.0
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(label="Dygnets snittpris", value=f"{dygn_snittpris:.1f} öre")
+        with col2:
+            diff = dygn_snittpris - valda_snittpris
+            st.metric(
+                label="Snittpris vid körtid (PÅ)",
+                value=f"{valda_snittpris:.1f} öre",
+                delta=f"-{diff:.1f} öre" if diff >= 0 else f"+{abs(diff):.1f} öre",
+                delta_color="normal" if diff >= 0 else "inverse"
+            )
+        with col3:
+            st.metric(label="Optimeringseffekt", value=f"{besparing_pct:.1f}% billigare")
+
+        st.divider()
+
+        fig_view = make_subplots(specs=[[{"secondary_y": True}]])
+        status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+        
+        fig_view.add_trace(
+            go.Scatter(
+                x=df_view["Tid"], y=df_view["status_num"],
+                name="Planerad Status", mode="lines+markers",
+                line=dict(shape="hv", color="rgba(150, 150, 150, 0.3)", width=2),
+                marker=dict(size=8, color=status_colors)
+            ),
+            secondary_y=True
+        )
+
+        fig_view.add_trace(
+            go.Scatter(
+                x=df_view["Tid"], y=df_view["Pris (öre/kWh)"],
+                name="Elpris (öre/kWh)", mode="lines",
+                line=dict(color="#29b6f6", width=2)
+            ),
+            secondary_y=False
+        )
+
+        fig_view.add_trace(
+            go.Scatter(
+                x=df_view["Tid"], y=df_view["Temperatur (°C)"],
+                name="Prognos Temp (°C)", mode="lines",
+                line=dict(color="#ffa726", width=2, dash="dot")
+            ),
+            secondary_y=False
+        )
+
+        fig_view.update_layout(
+            hovermode="x unified",
+            margin=dict(l=10, r=10, t=30, b=10),
+            height=420,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        fig_view.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
+        fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
+
+        st.plotly_chart(fig_view, width='stretch')
+
+        with st.expander("Visa tabell med samtliga kvartar"):
+            st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
 # --- TAB 4: ADMIN / CRUD ---
 with tab4:
     st.subheader("🛠️ Administrera Hus och Enheter")
