@@ -294,10 +294,23 @@ with tab1:
             df['time'] = pd.to_datetime(df['timestamp'])
             
             if is_thermostat:
-                # Extrahera numeriskt värde från status (t.ex. "10.0°C" -> 10.0)
-                df['status_val'] = df['status'].astype(str).str.replace('°C', '').astype(float)
+                # Robust parsing av statusvärden som kan innehålla både temperaturer och gamla ON/OFF-strängar
+                def parse_status_val(val):
+                    if pd.isna(val):
+                        return float(current_device.get("target_temp_low", 6.0))
+                    val_str = str(val).replace('°C', '').strip()
+                    try:
+                        return float(val_str)
+                    except ValueError:
+                        if val_str.upper() == 'ON':
+                            return float(current_device.get("target_temp_high", 10.0))
+                        elif val_str.upper() == 'OFF':
+                            return float(current_device.get("target_temp_low", 6.0))
+                        return float(current_device.get("target_temp_low", 6.0))
+
+                df['status_val'] = df['status'].apply(parse_status_val)
             else:
-                df['status_num'] = df['status'].apply(lambda x: 1 if x == 'ON' else 0)
+                df['status_num'] = df['status'].apply(lambda x: 1 if str(x).upper() == 'ON' else 0)
             
             latest = df.iloc[-1]
             
@@ -306,7 +319,7 @@ with tab1:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 hist_on_mask = df['status_val'] >= t_high
             else:
-                hist_on_mask = df['status'] == 'ON'
+                hist_on_mask = df['status'].astype(str).str.upper() == 'ON'
                 
             hist_on_snitt = df.loc[hist_on_mask, 'price'].mean() if hist_on_mask.any() else 0.0
             hist_diff = hist_snitt - hist_on_snitt
@@ -343,7 +356,7 @@ with tab1:
                     secondary_y=True
                 )
             else:
-                status_colors = df['status'].map({'ON': '#2ecc71', 'OFF': '#e74c3c'})
+                status_colors = df['status'].apply(lambda x: '#2ecc71' if str(x).upper() == 'ON' else '#e74c3c')
                 fig.add_trace(
                     go.Scatter(
                         x=df['time'], y=df['status_num'],
