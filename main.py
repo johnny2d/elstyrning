@@ -78,7 +78,7 @@ def save_history(history_data):
     if not GIST_ID:
         return
 
-    trimmed_history = history_data[-300:] # Sparar lite fler loggar när vi har flera enheter
+    trimmed_history = history_data[-300:] 
     payload = {
         "files": {
             "history.json": {
@@ -198,7 +198,6 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu ({station}): {e}")
     
-    # Reservlösning via Open-Meteo current
     try:
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
         res_om = requests.get(url_om, timeout=8)
@@ -243,9 +242,9 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return price_cap, min_on_blocks, motivering
 
     except Exception as e:
-        # Om kvoten är slut (429) eller annat fel, logga en enda gång och använd standard utan att göra flera försök
         print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/kvot nådd): {str(e)[:50]}")
         return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
+
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
@@ -261,7 +260,6 @@ def set_tuya_device(device_id: str, state: bool, device_type: str = "switch"):
                 devId=device_id
             )
             
-            # Beroende på enhetstyp kan koden variera (switch för reläer/termostater)
             code_names = ["switch", "switch_1", "switch_heat"] if device_type == "switch" else ["switch", "switch_1"]
             
             success = False
@@ -363,7 +361,7 @@ def generate_daily_schedule(
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
 
-# --- HUVUDLOGIK (FLERBOSTADSSED) ---
+# --- HUVUDLOGIK (FLERBOSTADSSPECIFIK) ---
 def main():
     try:
         config, history = load_gist_data()
@@ -375,7 +373,6 @@ def main():
         tomorrow_dt = now + timedelta(days=1)
         tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
-        # Begränsa anropsfrekvens om det körs för ofta
         if history:
             last_entry = history[-1]
             try:
@@ -385,12 +382,10 @@ def main():
             except Exception:
                 pass
 
-        # Hämta elpriser för SE2 en gång för alla hus
         prices_today = get_nordpool_price(zone="SE2", target_date=now)
         quarter_index = (now.hour * 4) + (now.minute // 15)
         current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
 
-        # Om konfigurationen använder den gamla platta strukturen, konvertera till houses-format temporärt
         if "houses" not in config:
             config = {
                 "houses": {
@@ -440,7 +435,6 @@ def main():
                 if not devices:
                     continue
 
-                # Använd husets första enhet som referens för husets övergripande AI-parametrar (eller genomsnitt)
                 ref_device = devices[0]
                 max_off = ref_device.get("max_off_blocks", 12)
                 min_on = ref_device.get("min_on_blocks", 44)
@@ -453,26 +447,26 @@ def main():
                 tomorrow_schedule_date = house_data.get("tomorrow_schedule_date")
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
-                # Kontrollera om AI behöver uppdateras för detta hus
+                # Kontrollera om AI behöver uppdateras (2 gånger per dygn / var 12:e timme)
+                # Skapa tidsgränser för dygnet (kl 00:00 och kl 12:00)
+                today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
+
                 needs_ai_update = False
-                if active_schedule_date != today_str:
-                    if tomorrow_schedule_date == today_str and tomorrow_schedule:
-                        daily_schedule = tomorrow_schedule
-                        active_schedule_date = today_str
-                        house_data["tomorrow_schedule"] = None
-                        house_data["tomorrow_schedule_date"] = None
-                        config_updated = True
-                    else:
-                        needs_ai_update = True
-                elif not last_ai_update_str:
+                
+                if house_data.get("schedule_date") != today_str:
+                    # 1. Ny dag: Vi saknar schema för idag
                     needs_ai_update = True
-                else:
+                elif last_ai_update_str:
                     try:
                         last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                        if (now - last_update_dt).total_seconds() >= 3 * 3600:
+                        # 2. Middagsuppdatering: Om klockan är >= 12 och senaste uppdatering gjordes före kl 12 idag (nattkörningen)
+                        if now.hour >= 12 and last_update_dt < today_noon and last_update_dt >= today_midnight:
                             needs_ai_update = True
                     except Exception:
                         needs_ai_update = True
+                else:
+                    needs_ai_update = True
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
@@ -486,7 +480,6 @@ def main():
                     )
                     
                     active_schedule_date = today_str
-                    # Uppdatera refernsenhetens värden eller husnivå
                     ref_device["price_cap"] = p_cap
                     ref_device["min_on_blocks"] = m_blocks
                     house_data["ai_latest_reasoning"] = reasoning
@@ -533,7 +526,6 @@ def main():
                     if not dev_id:
                         continue
 
-                    # Om enheten har egna inställningar kan vi generera ett eget schema vid behov
                     dev_schedule = daily_schedule
                     if dev_max_off != max_off or dev_min_on != min_on or dev_price_cap != price_cap:
                         dev_schedule = generate_daily_schedule(
@@ -569,9 +561,8 @@ def main():
 
                     print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
-                    # Skicka kommando till Tuya för denna enhet
                     set_tuya_device(dev_id, should_be_on, device_type=dev_type)
-                    time.sleep(2) # Pausa kort mellan enhetsanrop
+                    time.sleep(2)
 
                     final_status = "ON" if should_be_on else "OFF"
                     log_entry = {

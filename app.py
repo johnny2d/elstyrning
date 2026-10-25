@@ -70,7 +70,6 @@ def load_gist_data():
     except Exception as e:
         st.error(f"Kunde inte ladda data från Gist: {e}")
     
-    # Standardfallback om Gist är tom
     return {
         "houses": {
             "hus_as": {
@@ -78,6 +77,7 @@ def load_gist_data():
                 "lat": 63.25,
                 "lon": 14.56,
                 "temperatur_nu_station": "ostersund",
+                "zone": "SE2",
                 "devices": [
                     {
                         "id": "dev_1",
@@ -112,7 +112,6 @@ def save_config(config_data):
 
 config, history = load_gist_data()
 
-# Om konfigurationen använder den gamla platta strukturen, konvertera till houses-format temporärt
 if "houses" not in config:
     config = {
         "houses": {
@@ -121,6 +120,7 @@ if "houses" not in config:
                 "lat": config.get("lat", 63.25),
                 "lon": config.get("lon", 14.56),
                 "temperatur_nu_station": config.get("temperatur_nu_station", "ostersund"),
+                "zone": config.get("zone", "SE2"),
                 "schedule_date": config.get("schedule_date"),
                 "daily_schedule": config.get("daily_schedule"),
                 "tomorrow_schedule_date": config.get("tomorrow_schedule_date"),
@@ -187,7 +187,33 @@ if not current_device:
 if current_house.get("ai_latest_reasoning"):
     st.info(f"🤖 **AI-Strategens analys ({current_house.get('name')}):** {current_house.get('ai_latest_reasoning')}")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser", "🏠 Admin Hus & Enheter"])
+tab_overview, tab1, tab2, tab3, tab4 = st.tabs(["🏠 Överblick Alla Hus", "📊 Övervakning & Graf", "⚙️ Inställningar", "📅 Schema & Priser", "🛠️ Admin Hus & Enheter"])
+
+# --- TAB OVERVIEW: SAMMANSTÄLLNING FÖR ALLA HUS ---
+with tab_overview:
+    st.subheader("🏠 Övergripande status för alla fastigheter")
+    
+    if houses:
+        for h_key, h_data in houses.items():
+            with st.container():
+                st.markdown(f"### 📍 {h_data.get('name', h_key)}")
+                h_temp = get_outside_temp(station=h_data.get("temperatur_nu_station"), lat=h_data.get("lat", 63.25), lon=h_data.get("lon", 14.56))
+                
+                cols = st.columns(4)
+                cols[0].metric("Utetemperatur", f"{h_temp:.1f} °C")
+                cols[1].metric("Elområde", h_data.get("zone", "SE2"))
+                cols[2].metric("Antal enheter", len(h_data.get("devices", [])))
+                
+                device_statuses = []
+                for dev in h_data.get("devices", []):
+                    dev_name = dev.get("name")
+                    connected, status_msg = get_tuya_device_status(dev.get("device_id")) if dev.get("device_id") else (False, "Ej konfigurerad")
+                    device_statuses.append(f"**{dev_name}**: {status_msg}" + (" ⚠️" if not connected and dev.get("device_id") else ""))
+                
+                cols[3].markdown("**Enhetsstatus:**<br>" + ("<br>".join(device_statuses) if device_statuses else "Inga enheter"), unsafe_allow_html=True)
+                st.divider()
+    else:
+        st.info("Inga fastigheter registrerade.")
 
 # --- TAB 1: HISTORIK OCH GRAFER ---
 with tab1:
@@ -196,7 +222,6 @@ with tab1:
     if history:
         df = pd.DataFrame(history)
         
-        # Filtrera historiken baserat på det hus och den enhet som är vald i sidofältet
         if 'house' in df.columns and 'device' in df.columns:
             df = df[(df['house'] == current_house.get('name')) & (df['device'] == current_device.get('name'))]
         
@@ -279,7 +304,11 @@ with tab1:
                 ticktext=["AV 🔴", "PÅ 🟢"], range=[-0.2, 1.2], secondary_y=True
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
+            
+            with st.expander("Visa rådata / logg med orsaker"):
+                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'reason'] if c in df.columns]
+                st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width='stretch')
         else:
             st.info("Ingen historik matchar det valda huset och enheten än.")
     else:
@@ -287,7 +316,7 @@ with tab1:
 
     st.divider()
     tuya_connected, tuya_msg = get_tuya_device_status(current_device.get("device_id")) if current_device.get("device_id") else (False, "Inget Device ID angivet")
-    outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station", "ostersund"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+    outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -296,6 +325,9 @@ with tab1:
         st.metric("Utetemperatur", f"{outside_temp:.1f} °C")
     with col3:
         st.metric("Tuya Enhetsstatus", tuya_msg)
+
+    if not tuya_connected and current_device.get("device_id"):
+        st.warning(f"⚠️ Varning: Kunde inte nå Tuya moln-API för enhet '{current_device.get('name')}'. Kontrollera nätverk eller API-nycklar.")
 
 # --- TAB 2: INSTÄLLNINGAR ---
 with tab2:
@@ -335,7 +367,8 @@ with tab3:
     selected_day_tab = st.radio("Välj dag att granska:", ["Idag (" + today_str + ")", "Imorgon (" + tomorrow_str + ")"], horizontal=True)
 
     target_dt = now if "Idag" in selected_day_tab else tomorrow_dt
-    prices = get_nordpool_price(zone="SE2", target_date=target_dt)
+    house_zone = current_house.get("zone", "SE2")
+    prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
     temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
 
     temp_96 = []
@@ -354,7 +387,7 @@ with tab3:
             max_off = current_device.get("max_off_blocks", 12)
             min_on = current_device.get("min_on_blocks", 44)
             price_cap = current_device.get("price_cap", 50.0)
-            current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station", "ostersund"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+            current_temp_val = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
             schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=current_temp_val, price_cap=price_cap)
 
     times = []
@@ -436,11 +469,14 @@ with tab3:
     fig_view.update_yaxes(title_text="Elpris (öre/kWh) & Temp (°C)", secondary_y=False)
     fig_view.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV", "PÅ"], range=[-0.2, 1.2], secondary_y=True)
 
-    st.plotly_chart(fig_view, use_container_width=True)
+    st.plotly_chart(fig_view, width='stretch')
+
+    with st.expander("Visa tabell med samtliga kvartar"):
+        st.dataframe(df_view[["Tid", "Pris (öre/kWh)", "Temperatur (°C)", "Status"]], width='stretch')
 
 # --- TAB 4: ADMIN / CRUD ---
 with tab4:
-    st.subheader("🏠 Administrera Hus och Enheter")
+    st.subheader("🛠️ Administrera Hus och Enheter")
     
     st.write("### Lägg till nytt hus")
     new_house_key = st.text_input("Unikt hus-ID (t.ex. 'stugan')", key="new_h_key")
@@ -448,6 +484,7 @@ with tab4:
     new_lat = st.number_input("Latitud", value=63.30, key="new_h_lat")
     new_lon = st.number_input("Longitud", value=14.70, key="new_h_lon")
     new_station = st.text_input("Temperatur.nu station (t.ex. 'ronnofors')", key="new_h_stat")
+    new_zone = st.selectbox("Elområde", options=["SE1", "SE2", "SE3", "SE4"], index=1, key="new_h_zone")
     
     if st.button("Lägg till hus"):
         if new_house_key and new_house_name:
@@ -459,6 +496,7 @@ with tab4:
                     "lat": new_lat,
                     "lon": new_lon,
                     "temperatur_nu_station": new_station,
+                    "zone": new_zone,
                     "devices": []
                 }
                 save_config(config)
@@ -468,10 +506,24 @@ with tab4:
             st.warning("Fyll i både ID och namn.")
 
     st.divider()
-    st.write(f"### Lägg till enhet i vald plats: {current_house.get('name')}")
-    dev_name = st.text_input("Enhetens namn (t.ex. 'Badrum Golvvärme')")
-    dev_tuya_id = st.text_input("Tuya Device ID")
-    dev_type = st.selectbox("Enhetstyp", options=["switch", "thermostat"], format_func=lambda x: "Relä / Switch (Av/På)" if x == "switch" else "Golvvärmetermostat (Termostat)")
+    st.write("### Ta bort ett helt hus")
+    if len(houses) > 1:
+        house_to_delete = st.selectbox("Välj hus att radera", options=list(houses.keys()), format_func=lambda k: houses[k].get("name", k), key="del_h_select")
+        if st.button("🗑️ Ta bort markerat hus", type="secondary"):
+            removed_name = houses[house_to_delete].get("name", house_to_delete)
+            del houses[house_to_delete]
+            save_config(config)
+            st.success(f"Huset '{removed_name}' har raderats.")
+            st.rerun()
+    else:
+        st.info("Du måste ha minst ett hus kvar i systemet.")
+
+    st.divider()
+    st.write(f"### Hantera enheter i vald plats: {current_house.get('name')}")
+    
+    dev_name = st.text_input("Enhetens namn (t.ex. 'Badrum Golvvärme')", key="new_dev_name")
+    dev_tuya_id = st.text_input("Tuya Device ID", key="new_dev_tuya")
+    dev_type = st.selectbox("Enhetstyp", options=["switch", "thermostat"], format_func=lambda x: "Relä / Switch (Av/På)" if x == "switch" else "Golvvärmetermostat (Termostat)", key="new_dev_type")
     
     if st.button("Lägg till enhet"):
         if dev_name and dev_tuya_id:
@@ -499,8 +551,8 @@ with tab4:
     st.divider()
     st.write("### Radera enhet")
     if current_house.get("devices"):
-        dev_to_delete = st.selectbox("Välj enhet att ta bort", options=range(len(current_house["devices"])), format_func=lambda i: current_house["devices"][i]["name"])
-        if st.button("🗑️ Ta bort markerad enhet", type="secondary"):
+        dev_to_delete = st.selectbox("Välj enhet att ta bort", options=range(len(current_house["devices"])), format_func=lambda i: current_house["devices"][i]["name"], key="del_dev_select")
+        if st.button("🗑️ Ta bort markerad enhet", type="secondary", key="del_dev_btn"):
             removed = current_house["devices"].pop(dev_to_delete)
             save_config(config)
             st.success(f"Enheten '{removed['name']}' har tagits bort.")
