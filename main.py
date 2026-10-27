@@ -207,7 +207,6 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
         pass
 
     return 5.0
-
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
@@ -215,8 +214,13 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
 
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
-    Här är elpriserna (96 kvartar) för {target_day_label}: {prices_96}
-    Här är utetemperaturen (24h): {temp_hourly}
+    Här är elpriserna (96 kvartar, angivna i ÖRE per kWh) för {target_day_label}: {prices_96}
+    Här är utetemperaturen (24h i °C): {temp_hourly}
+    
+    VIKTIGA REGLER FÖR OPTIMERINGEN:
+    1. Priserna är angivna i ÖRE/kWh. Din motivering MÅSTE använda enheten öre/kWh (använd aldrig kr/kWh).
+    2. Vid milda utetemperaturen (över 0 °C) ska minimidriftstiden ('min_on_hours') hållas låg, förslagsvis mellan 4 och 8 timmar per dygn, för att undvika onödig uppvärmning. Slösa inte med driftstimmar när det är milt ute!
+    
     Svara ENBART med ett giltigt JSON-objekt enligt detta format:
     {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring>"}}
     """
@@ -244,6 +248,8 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
     except Exception as e:
         print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/kvot nådd): {str(e)[:50]}")
         return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
+
+
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
