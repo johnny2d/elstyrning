@@ -10,7 +10,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Secret environment injection
 if hasattr(st, "secrets"):
     if "GEMINI_API_KEY" in st.secrets:
         os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
@@ -72,22 +71,19 @@ def save_config(config_data):
 
 config, history = load_gist_data()
 
-# Säkerställ grundläggande nycklar i config
 if "houses" not in config:
     config["houses"] = {}
 if "admin_password" not in config:
     config["admin_password"] = st.secrets.get("APP_PASSWORD", "admin123")
 
-# --- AUTHENTICATION & SESSION MANAGEMENT ---
+# --- AUTHENTICATION & SESSION ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
-    st.session_state["user_role"] = None  # 'admin' eller 'house'
+    st.session_state["user_role"] = None
     st.session_state["assigned_house_key"] = None
 
 def login_user(username_input, password_input):
     username_clean = username_input.strip()
-    
-    # 1. Kontrollera om det är Admin-inloggning
     if username_clean.lower() == "admin":
         if password_input == config.get("admin_password", "admin123"):
             st.session_state["authenticated"] = True
@@ -96,38 +92,31 @@ def login_user(username_input, password_input):
             return True, "Välkommen Admin!"
         return False, "Fel lösenord för Admin."
 
-    # 2. Kontrollera om det är inloggning för ett specifikt hus
     houses = config.get("houses", {})
     for h_key, h_data in houses.items():
         h_name = h_data.get("name", h_key)
-        # Matcha antingen på visningsnamn eller hus-ID
         if username_clean.lower() in [h_name.lower(), h_key.lower()]:
-            h_password = h_data.get("password", "hus123")
-            if password_input == h_password:
+            if password_input == h_data.get("password", "hus123"):
                 st.session_state["authenticated"] = True
                 st.session_state["user_role"] = "house"
                 st.session_state["assigned_house_key"] = h_key
                 return True, f"Välkommen till {h_name}!"
             return False, f"Fel lösenord för {h_name}."
 
-    return False, "Användarnamnet (huset) hittades inte."
+    return False, "Användarnamnet hittades inte."
 
-# --- INLOGGNINGSVY ---
 if not st.session_state["authenticated"]:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.title("🔒 Logga in på Elstyrningen")
-        st.caption("Ange husnamn (t.ex. 'Stugan' eller 'Huvudhuset (Ås)') eller 'admin' för systemadministration.")
-        
+        st.caption("Ange husnamn (t.ex. 'Stugan') eller 'admin'.")
         with st.form("login_form"):
-            username_input = st.text_input("Användarnamn (Husnamn eller 'admin')")
-            password_input = st.text_input("Lösenord", type="password")
-            submit_btn = st.form_submit_button("Logga in", use_container_width=True, type="primary")
-            
-            if submit_btn:
-                success, msg = login_user(username_input, password_input)
-                if success:
+            u_in = st.text_input("Användarnamn")
+            p_in = st.text_input("Lösenord", type="password")
+            if st.form_submit_button("Logga in", use_container_width=True, type="primary"):
+                ok, msg = login_user(u_in, p_in)
+                if ok:
                     st.success(msg)
                     time.sleep(0.5)
                     st.rerun()
@@ -135,32 +124,23 @@ if not st.session_state["authenticated"]:
                     st.error(msg)
     st.stop()
 
-# --- SYSTEM HUVUDVY (INLOGGAD) ---
 is_admin = st.session_state["user_role"] == "admin"
 houses = config.get("houses", {})
 
-# Sidofält & Utloggning
 with st.sidebar:
     st.title("⚡ Elstyrning")
     if is_admin:
-        st.subheader("👤 Inloggad som: **System Admin**")
+        st.subheader("👤 Inloggad: **Admin**")
         if houses:
-            house_keys = list(houses.keys())
-            selected_house_key = st.selectbox("Aktivt Hus (Admin-vy)", house_keys, format_func=lambda k: houses[k].get("name", k))
+            selected_house_key = st.selectbox("Aktivt Hus", list(houses.keys()), format_func=lambda k: houses[k].get("name", k))
             current_house = houses[selected_house_key]
         else:
-            st.warning("Inga hus registrerade.")
             current_house = None
     else:
-        assigned_key = st.session_state["assigned_house_key"]
-        current_house = houses.get(assigned_key)
+        current_house = houses.get(st.session_state["assigned_house_key"])
         if current_house:
             st.subheader(f"🏠 **{current_house.get('name')}**")
-        else:
-            st.error("Husdata saknas.")
-            st.stop()
 
-    # Enhetsväljare i sidofältet
     current_device = None
     if current_house:
         devices = current_house.get("devices", [])
@@ -168,57 +148,36 @@ with st.sidebar:
             device_names = [d.get("name", d.get("id")) for d in devices]
             selected_device_idx = st.selectbox("Välj Enhet", range(len(devices)), format_func=lambda i: device_names[i])
             current_device = devices[selected_device_idx]
-        else:
-            st.info("Inga enheter inlagda för detta hus.")
 
     st.divider()
-    
-    # Admin Forcering
     if is_admin:
         st.write("### ⚡ Admin-verktyg")
-        if st.button("🚀 Forcera AI-omräkning (Alla hus)", type="primary"):
-            with st.spinner("Beräknar om scheman för alla hus med paus mellan anrop..."):
+        if st.button("🚀 Forcera AI-omräkning", type="primary"):
+            with st.spinner("Beräknar om scheman..."):
                 try:
                     now = datetime.now(sweden_tz)
                     today_str = now.strftime("%Y-%m-%d")
-                    tomorrow_dt = now + timedelta(days=1)
-                    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
-
                     for h_key, h_data in houses.items():
-                        time.sleep(12) # Fördröjning för Gemini Rate Limit
-                        h_lat = h_data.get("lat", 63.25)
-                        h_lon = h_data.get("lon", 14.56)
-                        h_zone = h_data.get("zone", "SE2")
-                        h_station = h_data.get("temperatur_nu_station")
-
-                        current_temp = get_outside_temp(station=h_station, lat=h_lat, lon=h_lon)
-                        prices_today = get_nordpool_price(zone=h_zone, target_date=now)
-                        temp_forecast = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
-
+                        time.sleep(12)
+                        h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
+                        h_zone, h_station = h_data.get("zone", "SE2"), h_data.get("temperatur_nu_station")
+                        
+                        curr_temp = get_outside_temp(station=h_station, lat=h_lat, lon=h_lon)
+                        prices = get_nordpool_price(zone=h_zone, target_date=now)
+                        forecast = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
+                        
                         devs = h_data.get("devices", [])
-                        ref_dev = devs[0] if devs else {}
-                        def_cap = ref_dev.get("price_cap", 50.0)
-                        def_min_on = ref_dev.get("min_on_blocks", 44)
-                        max_off = ref_dev.get("max_off_blocks", 12)
-
-                        p_cap_today, m_blocks_today, reasoning_today = get_ai_optimized_parameters(
-                            prices_today, temp_forecast, default_price_cap=def_cap, default_min_on_blocks=def_min_on, target_day_label=f"idag ({h_data.get('name')})"
-                        )
-                        daily_sched = generate_daily_schedule(
-                            prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, current_temp=current_temp, price_cap=p_cap_today
-                        )
-
-                        h_data["schedule_date"] = today_str
-                        h_data["daily_schedule"] = daily_sched
-                        h_data["ai_latest_reasoning"] = reasoning_today
-                        h_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
-
+                        ref = devs[0] if devs else {}
+                        p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 44), target_day_label=f"idag ({h_data.get('name')})")
+                        sched = generate_daily_schedule(prices, max_off_blocks=ref.get("max_off_blocks", 12), min_on_blocks=m_blocks, current_temp=curr_temp, price_cap=p_cap)
+                        
+                        h_data.update({"schedule_date": today_str, "daily_schedule": sched, "ai_latest_reasoning": reasoning, "last_ai_update": now.strftime("%Y-%m-%d %H:%M")})
                     save_config(config)
                     st.cache_data.clear()
-                    st.success("AI-omräkning klar!")
+                    st.success("Klart!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Ett fel uppstod: {e}")
+                    st.error(f"Fel: {e}")
 
     if st.button("🚪 Logga ut"):
         st.session_state["authenticated"] = False
@@ -226,36 +185,25 @@ with st.sidebar:
         st.session_state["assigned_house_key"] = None
         st.rerun()
 
-# --- HUVUDLAYOUT & FLIKAR ---
 st.title(f"⚡ {current_house.get('name') if current_house else 'Elstyrning'}")
 
 if current_house and current_house.get("ai_latest_reasoning"):
     st.info(f"🤖 **AI-Strategens analys:** {current_house.get('ai_latest_reasoning')}")
 
-# Definiera flikar beroende på roll
 if is_admin:
-    tab_dash, tab_hist, tab_settings, tab_sched, tab_admin = st.tabs([
-        "🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser", "🛠️ System Admin"
-    ])
+    tab_dash, tab_hist, tab_settings, tab_sched, tab_admin = st.tabs(["🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser", "🛠️ System Admin"])
 else:
-    tab_dash, tab_hist, tab_settings, tab_sched = st.tabs([
-        "🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser"
-    ])
+    tab_dash, tab_hist, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- TAB 1: DASHBOARD & REALTIDSDATA ---
+# --- TAB 1: DASHBOARD & NYA SNGGGA PANELENHETER ---
 with tab_dash:
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
-    outside_temp = get_outside_temp(
-        station=current_house.get("temperatur_nu_station"), 
-        lat=current_house.get("lat", 63.25), 
-        lon=current_house.get("lon", 14.56)
-    )
+    outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56)) if current_house else 0.0
     
-    # Beräkna veckans besparing baserat på historik för detta hus
     week_savings_kr = 0.0
-    if history:
+    if history and current_house:
         df_h = pd.DataFrame(history)
         if 'house' in df_h.columns and current_house.get('name') in df_h['house'].values:
             df_h = df_h[df_h['house'] == current_house.get('name')]
@@ -268,43 +216,44 @@ with tab_dash:
                     active_mask = df_week['status'].astype(str).str.upper().isin(['ON', 'TRUE']) | (df_week['status'].astype(str).str.contains('°C'))
                     active_prices = df_week.loc[active_mask, 'price']
                     if not active_prices.empty:
-                        saved_ore_per_kwh = avg_price - active_prices.mean()
-                        # Anta schablonförbrukning på ca 2 kW per aktiv timme
-                        estimated_kwh = len(active_prices) * 0.5 * 2.0
-                        week_savings_kr = max(0.0, (saved_ore_per_kwh * estimated_kwh) / 100.0)
+                        saved_ore = avg_price - active_prices.mean()
+                        est_kwh = len(active_prices) * 0.5 * 2.0
+                        week_savings_kr = max(0.0, (saved_ore * est_kwh) / 100.0)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Utetemperatur", f"{outside_temp:.1f} °C")
-    col2.metric("Elområde", current_house.get("zone", "SE2"))
-    col3.metric("Antal enheter", len(current_house.get("devices", [])))
-    col4.metric("Estimerad besparing (7 dgr)", f"{week_savings_kr:.2f} kr")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Utetemperatur", f"{outside_temp:.1f} °C")
+    c2.metric("Elområde", current_house.get("zone", "SE2") if current_house else "-")
+    c3.metric("Antal enheter", len(current_house.get("devices", [])) if current_house else 0)
+    c4.metric("Estimerad besparing (7 dgr)", f"{week_savings_kr:.2f} kr")
 
     st.divider()
-    st.write("### 🔌 Husets Enheter")
+    st.markdown("### 🎛️ Husets Enheter (Paneler)")
     
-    devs = current_house.get("devices", [])
-    if devs:
-        dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
-        for idx, dev in enumerate(devs):
-            with dev_cols[idx % 3]:
-                st.markdown(f"#### {dev.get('name')}")
-                st.caption(f"Typ: {'Termostat' if dev.get('type') == 'thermostat' else 'Relä/Switch'}")
-                
-                tuya_conn, tuya_msg, dev_temp = get_tuya_device_status(
-                    dev.get("device_id"), 
-                    device_type=dev.get("type", "switch")
-                ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
-                
-                st.write(f"**Status:** {tuya_msg}")
-                if dev_temp is not None:
-                    st.write(f"**Givartemperatur:** {dev_temp:.1f} °C")
-                st.write(f"**Driftläge:** {dev.get('force_override', 'AUTO')}")
-                st.divider()
-    else:
-        st.info("Inga enheter registrerade för detta hus ännu.")
+    if current_house:
+        devs = current_house.get("devices", [])
+        if devs:
+            dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
+            for idx, dev in enumerate(devs):
+                with dev_cols[idx % 3]:
+                    # Snygg container-stil med CSS-känsla
+                    with st.container(border=True):
+                        st.markdown(f"#### 🔌 {dev.get('name')}")
+                        is_term = dev.get("type") == "thermostat"
+                        st.caption(f"Typ: {'Termostat' if is_term else 'Relä / Switch'}")
+                        
+                        tuya_conn, tuya_msg, dev_temp = get_tuya_device_status(
+                            dev.get("device_id"), 
+                            device_type=dev.get("type", "switch")
+                        ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
+                        
+                        st.markdown(f"**Status:** `{tuya_msg}`")
+                        if dev_temp is not None:
+                            st.markdown(f"**Givartemp:** `{dev_temp:.1f} °C`")
+                        st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
+        else:
+            st.info("Inga enheter registrerade för detta hus ännu.")
 
 # --- TAB 2: HISTORIK & GRAFER ---
-
 with tab_hist:
     if not current_device:
         st.info("Välj en enhet i sidofältet för att visa historik.")
@@ -319,7 +268,6 @@ with tab_hist:
             
             if not df.empty:
                 df['time'] = pd.to_datetime(df['timestamp'])
-                
                 if is_thermostat:
                     def parse_status_val(val):
                         if pd.isna(val): return float(current_device.get("target_temp_low", 6.0))
@@ -389,39 +337,71 @@ with tab_settings:
             st.cache_data.clear()
             st.rerun()
 
-# --- TAB 4: SCHEMA & PRISER ---
+# --- TAB 4: SCHEMA & PRISER (MED IDAG / IMORGON VÄLJARE) ---
 with tab_sched:
-    st.subheader(f"📅 Schema för {current_house.get('name')}")
+    st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
+    
     if current_device:
         is_thermostat = current_device.get("type") == "thermostat"
         now = datetime.now(sweden_tz)
         today_str = now.strftime("%Y-%m-%d")
-        prices = get_nordpool_price(zone=current_house.get("zone", "SE2"), target_date=now)
-        temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=now)
+        tomorrow_dt = now + timedelta(days=1)
+        tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
 
-        schedule = current_house.get("daily_schedule", [True]*96)
-        times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
+        selected_day = st.radio("Välj dag att granska:", [f"Idag ({today_str})", f"Imorgon ({tomorrow_str})"], horizontal=True)
+        is_tomorrow = "Imorgon" in selected_day
+        target_dt = now if not is_tomorrow else tomorrow_dt
+        
+        house_zone = current_house.get("zone", "SE2")
+        prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
+        
+        prices_has_arrived = True
+        if is_tomorrow:
+            if not prices or len(set(prices)) <= 1:
+                prices_has_arrived = False
 
-        fig_s = make_subplots(specs=[[{"secondary_y": True}]])
-        if is_thermostat:
-            t_high = float(current_device.get("target_temp_high", 10.0))
-            t_low = float(current_device.get("target_temp_low", 6.0))
-            vals = [t_high if s else t_low for s in schedule[:96]]
-            fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Måltemp (°C)", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+        if is_tomorrow and not prices_has_arrived:
+            st.info(f"⏳ **Morgondagens elprisprognos har inte publicerats ännu.**\n\nNordpool brukar publicera morgondagens priser dagligen runt kl. **13:00–14:00**. Vänligen återkom efter det för att se schemat för {tomorrow_str}.")
         else:
-            vals = [1 if s else 0 for s in schedule[:96]]
-            fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Status", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+            temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
+            temp_96 = []
+            for t_val in temp_forecast:
+                temp_96.extend([t_val] * 4)
+            while len(temp_96) < 96:
+                temp_96.append(temp_96[-1] if temp_96 else 0.0)
 
-        fig_s.add_trace(go.Scatter(x=times, y=prices[:96], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
-        fig_s.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig_s, width='stretch')
+            if not is_tomorrow:
+                schedule = current_house.get("daily_schedule", [True]*96)
+            else:
+                schedule = current_house.get("tomorrow_schedule")
+                if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
+                    max_off = current_device.get("max_off_blocks", 12)
+                    min_on = current_device.get("min_on_blocks", 44)
+                    price_cap = current_device.get("price_cap", 50.0)
+                    curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+                    schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=curr_temp, price_cap=price_cap)
 
-# --- TAB 5: SYSTEM ADMIN (ENBART SYNLIG FÖR ADMIN) ---
+            times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
+
+            fig_s = make_subplots(specs=[[{"secondary_y": True}]])
+            if is_thermostat:
+                t_high = float(current_device.get("target_temp_high", 10.0))
+                t_low = float(current_device.get("target_temp_low", 6.0))
+                vals = [t_high if s else t_low for s in schedule[:len(times)]]
+                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Måltemp (°C)", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+            else:
+                vals = [1 if s else 0 for s in schedule[:len(times)]]
+                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Status", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+
+            fig_s.add_trace(go.Scatter(x=times, y=prices[:len(times)], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
+            fig_s.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_s, width='stretch')
+
+# --- TAB 5: SYSTEM ADMIN ---
 if is_admin and tab_admin:
     with tab_admin:
         st.subheader("🛠️ Systemadministration & Lösenordshantering")
         
-        # 1. Lösenordshantering
         st.write("### 🔑 Hantera Lösenord")
         admin_pw_input = st.text_input("Ändra Admin-lösenord", value=config.get("admin_password", "admin123"))
         if st.button("💾 Uppdatera Admin-lösenord"):
@@ -445,7 +425,7 @@ if is_admin and tab_admin:
         st.divider()
         st.write("### ➕ Lägg till nytt hus")
         new_h_id = st.text_input("Hus-ID (t.ex. 'stugan_2')")
-        new_h_name = st.text_input("Husets Namn / Användarnamn (t.ex. 'Fjällstugan')")
+        new_h_name = st.text_input("Husets Namn / Användarnamn")
         new_h_pw = st.text_input("Inledande lösenord", value="hus123")
         new_h_lat = st.number_input("Latitud", value=63.30)
         new_h_lon = st.number_input("Longitud", value=14.70)
