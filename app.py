@@ -279,11 +279,6 @@ with tab_hist:
                     df['status_num'] = df['status'].apply(lambda x: 1 if str(x).upper() == 'ON' else 0)
 
                 latest = df.iloc[-1]
-                hist_snitt = df['price'].mean()
-                if is_thermostat:
-                    hist_on_mask = df['status_val'] >= float(current_device.get("target_temp_high", 10.0))
-                else:
-                    hist_on_mask = df['status'].astype(str).str.upper() == 'ON'
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Aktuellt pris", f"{latest.get('price', 0):.2f} öre/kWh")
@@ -316,7 +311,7 @@ with tab_hist:
         else:
             st.info("Ingen historik registrerad ännu.")
 
-# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD (UTAN PRISTAK) ---
+# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD ---
 with tab_settings:
     if not current_device:
         st.info("Ingen enhet vald.")
@@ -351,7 +346,7 @@ with tab_settings:
             save_config(config)
             st.success("Lösenordet har uppdaterats!")
 
-# --- TAB 4: SCHEMA & PRISER (MED PERSISTENS FÖR MORGONDAGEN) ---
+# --- TAB 4: SCHEMA & PRISER (UTÖKADE PUNKTER FÖR HELTÄCKANDE LINJER) ---
 with tab_sched:
     st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
     
@@ -400,31 +395,40 @@ with tab_sched:
                     save_config(config)
 
             times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
+            times_extended = times + ["24:00"]
 
             fig_s = make_subplots(specs=[[{"secondary_y": True}]])
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
                 vals = [t_high if s else t_low for s in schedule[:len(times)]]
-                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+                vals_extended = vals + [vals[-1]]
+                fig_s.add_trace(go.Scatter(x=times_extended, y=vals_extended, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
             else:
                 vals = [1 if s else 0 for s in schedule[:len(times)]]
+                vals_extended = vals + [vals[-1]]
+                
                 status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+                status_colors_extended = status_colors + [status_colors[-1]]
+                
                 status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule[:len(times)]]
+                status_labels_extended = status_labels + [status_labels[-1]]
                 
                 fig_s.add_trace(
                     go.Scatter(
-                        x=times, y=vals,
+                        x=times_extended, y=vals_extended,
                         name="Status", mode="lines+markers",
                         line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=2),
-                        marker=dict(size=8, color=status_colors, symbol="circle"),
-                        customdata=status_labels,
+                        marker=dict(size=8, color=status_colors_extended, symbol="circle"),
+                        customdata=status_labels_extended,
                         hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
                     ),
                     secondary_y=True
                 )
 
-            fig_s.add_trace(go.Scatter(x=times, y=prices[:len(times)], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
+            prices_extended = list(prices[:len(times)]) + [prices[len(times)-1] if len(prices) >= len(times) else 0]
+            fig_s.add_trace(go.Scatter(x=times_extended, y=prices_extended, name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
+            
             fig_s.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
             fig_s.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
             if is_thermostat:
