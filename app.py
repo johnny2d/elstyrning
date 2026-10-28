@@ -196,13 +196,12 @@ else:
     tab_dash, tab_hist, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- TAB 1: DASHBOARD (MED SNITTPRIS OCH PROCENTBESPARING) ---
+# --- TAB 1: DASHBOARD ---
 with tab_dash:
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
     outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56)) if current_house else 0.0
     
-    # Hämta dagens priser och dagschema för beräkning av snitt och besparing %
     now = datetime.now(sweden_tz)
     house_zone = current_house.get("zone", "SE2") if current_house else "SE2"
     today_prices = get_nordpool_price(zone=house_zone, target_date=now)
@@ -220,7 +219,6 @@ with tab_dash:
                 if avg_day_price > 0:
                     active_saving_pct = max(0.0, ((avg_day_price - avg_active_price) / avg_day_price) * 100.0)
 
-    # Beräkna även veckans besparing i kronor
     week_savings_kr = 0.0
     if history and current_house:
         df_h = pd.DataFrame(history)
@@ -326,6 +324,22 @@ with tab_hist:
                 fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
                 fig.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
                 st.plotly_chart(fig, use_container_width=True)
+
+                # --- NYCKELTAL UNDER GRAFEN FÖR HISTORIK ---
+                hist_avg = df['price'].mean() if not df.empty else 0.0
+                if is_thermostat:
+                    hist_active_mask = df['status_val'] >= float(current_device.get("target_temp_high", 10.0))
+                else:
+                    hist_active_mask = df['status'].astype(str).str.upper() == 'ON'
+                
+                hist_active_p = df.loc[hist_active_mask, 'price']
+                hist_active_avg = hist_active_p.mean() if not hist_active_p.empty else hist_avg
+                hist_savings_pct = max(0.0, ((hist_avg - hist_active_avg) / hist_avg) * 100.0) if hist_avg > 0 else 0.0
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Dagens medelpris (El)", f"{hist_avg:.2f} öre/kWh")
+                m2.metric("Planerat inköpspris", f"{hist_active_avg:.2f} öre/kWh")
+                m3.metric("Sparat mot medelpris", f"{hist_savings_pct:.1f} %")
             else:
                 st.info("Ingen historik för denna enhet ännu.")
         else:
@@ -352,7 +366,7 @@ with tab_settings:
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
-                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4, "force_override": force})
+                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4})
             save_config(config)
             st.cache_data.clear()
             st.rerun()
@@ -458,6 +472,17 @@ with tab_sched:
 
             st.plotly_chart(fig_s, use_container_width=True)
 
+            # --- NYCKELTAL UNDER GRAFEN FÖR SCHEMA ---
+            sched_avg = sum(prices[:96]) / len(prices[:96]) if prices else 0.0
+            active_p_sched = [prices[i] for i in range(min(len(prices), len(schedule))) if schedule[i]]
+            sched_active_avg = sum(active_p_sched) / len(active_p_sched) if active_p_sched else sched_avg
+            sched_savings_pct = max(0.0, ((sched_avg - sched_active_avg) / sched_avg) * 100.0) if sched_avg > 0 else 0.0
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Dagens medelpris (El)", f"{sched_avg:.2f} öre/kWh")
+            m2.metric("Planerat inköpspris", f"{sched_active_avg:.2f} öre/kWh")
+            m3.metric("Sparat mot medelpris", f"{sched_savings_pct:.1f} %")
+
 # --- TAB 5: SYSTEM ADMIN ---
 if is_admin and tab_admin:
     with tab_admin:
@@ -526,7 +551,7 @@ if is_admin and tab_admin:
                     if dev_type == "thermostat":
                         new_dev.update({"target_temp_high": 10.0, "target_temp_low": 6.0})
                     else:
-                        new_dev.update({"min_on_blocks": 44, "max_off_blocks": 12, "price_cap": 50.0})
+                        new_dev.update({"min_on_blocks": 44, "max_off_blocks": 12})
                     current_house.setdefault("devices", []).append(new_dev)
                     save_config(config)
                     st.success(f"Enhet '{dev_name}' tillagd!")
