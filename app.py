@@ -316,7 +316,7 @@ with tab_hist:
         else:
             st.info("Ingen historik registrerad ännu.")
 
-# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD ---
+# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD (UTAN PRISTAK) ---
 with tab_settings:
     if not current_device:
         st.info("Ingen enhet vald.")
@@ -330,7 +330,6 @@ with tab_settings:
         else:
             min_on = st.slider("Minsta körtid per dygn (timmar)", 4, 24, int(current_device.get("min_on_blocks", 44) / 4))
             max_off = st.slider("Max avstängning i rad (timmar)", 1, 6, int(current_device.get("max_off_blocks", 12) / 4))
-            price_cap = st.number_input("Pristak (öre/kWh)", min_value=1.0, max_value=500.0, value=float(current_device.get("price_cap", 50.0)), step=1.0)
 
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
@@ -338,7 +337,7 @@ with tab_settings:
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
-                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4, "price_cap": price_cap, "force_override": force})
+                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4, "force_override": force})
             save_config(config)
             st.cache_data.clear()
             st.rerun()
@@ -396,7 +395,6 @@ with tab_sched:
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
                     schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=curr_temp, price_cap=price_cap)
                     
-                    # Spara ner permanent till Gist så det inte tappas bort
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
                     save_config(config)
