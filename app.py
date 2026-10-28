@@ -324,6 +324,15 @@ with tab_hist:
                 fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
                 fig.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
                 st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
+                
+                # --- HÄR ÄR RÅDATA-LOGGEN SOM SAKNADES ---
+                with st.expander("Visa rådata / logg per kvart med orsak och status"):
+                    if not df.empty:
+                        cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'device_temp', 'reason'] if c in df.columns]
+                        st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width='stretch')
+                    else:
+                        st.info("Ingen historik att visa i tabellen ännu.")
 
                 hist_avg = df['price'].mean() if not df.empty else 0.0
                 if is_thermostat:
