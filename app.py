@@ -168,8 +168,8 @@ with st.sidebar:
                         
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
-                        p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 44), target_day_label=f"idag ({h_data.get('name')})")
-                        sched = generate_daily_schedule(prices, max_off_blocks=ref.get("max_off_blocks", 12), min_on_blocks=m_blocks, current_temp=curr_temp, price_cap=p_cap)
+                        p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 24), target_day_label=f"idag ({h_data.get('name')})")
+                        sched = generate_daily_schedule(prices, max_off_blocks=96, min_on_blocks=m_blocks, current_temp=curr_temp, price_cap=p_cap)
                         
                         h_data.update({"schedule_date": today_str, "daily_schedule": sched, "ai_latest_reasoning": reasoning, "last_ai_update": now.strftime("%Y-%m-%d %H:%M")})
                     save_config(config)
@@ -325,7 +325,6 @@ with tab_hist:
                 fig.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- NYCKELTAL UNDER GRAFEN FÖR HISTORIK ---
                 hist_avg = df['price'].mean() if not df.empty else 0.0
                 if is_thermostat:
                     hist_active_mask = df['status_val'] >= float(current_device.get("target_temp_high", 10.0))
@@ -345,7 +344,7 @@ with tab_hist:
         else:
             st.info("Ingen historik registrerad ännu.")
 
-# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD ---
+# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD (RENSAD FRÅN MANUELLA BEGRÄNSNINGAR) ---
 with tab_settings:
     if not current_device:
         st.info("Ingen enhet vald.")
@@ -357,8 +356,7 @@ with tab_settings:
             t_high = st.number_input("Hög temperatur (Komfort) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
             t_low = st.number_input("Låg temperatur (Eco) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
         else:
-            min_on = st.slider("Minsta körtid per dygn (timmar)", 4, 24, int(current_device.get("min_on_blocks", 44) / 4))
-            max_off = st.slider("Max avstängning i rad (timmar)", 1, 6, int(current_device.get("max_off_blocks", 12) / 4))
+            st.info("🤖 **Automatisk optimering aktiv:** Systemet och AI-strategen väljer dynamiskt de absolut billigaste drifttimmar över dygnet baserat på utetemperatur och elprisprognoser.")
 
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
@@ -366,7 +364,7 @@ with tab_settings:
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
-                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4})
+                current_device.update({"force_override": force})
             save_config(config)
             st.cache_data.clear()
             st.rerun()
@@ -418,11 +416,8 @@ with tab_sched:
             else:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
-                    max_off = current_device.get("max_off_blocks", 12)
-                    min_on = current_device.get("min_on_blocks", 44)
-                    price_cap = current_device.get("price_cap", 50.0)
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                    schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=curr_temp, price_cap=price_cap)
+                    schedule = generate_daily_schedule(prices, max_off_blocks=96, min_on_blocks=24, current_temp=curr_temp, price_cap=500.0)
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
@@ -472,7 +467,6 @@ with tab_sched:
 
             st.plotly_chart(fig_s, use_container_width=True)
 
-            # --- NYCKELTAL UNDER GRAFEN FÖR SCHEMA ---
             sched_avg = sum(prices[:96]) / len(prices[:96]) if prices else 0.0
             active_p_sched = [prices[i] for i in range(min(len(prices), len(schedule))) if schedule[i]]
             sched_active_avg = sum(active_p_sched) / len(active_p_sched) if active_p_sched else sched_avg
@@ -550,8 +544,6 @@ if is_admin and tab_admin:
                     }
                     if dev_type == "thermostat":
                         new_dev.update({"target_temp_high": 10.0, "target_temp_low": 6.0})
-                    else:
-                        new_dev.update({"min_on_blocks": 44, "max_off_blocks": 12})
                     current_house.setdefault("devices", []).append(new_dev)
                     save_config(config)
                     st.success(f"Enhet '{dev_name}' tillagd!")
