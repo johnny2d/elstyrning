@@ -209,41 +209,74 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
-# --- AI STRATEGEN (GEMINI) ---
-# --- AI STRATEGEN (GEMINI) MED SMART LOKAL FALLBACK ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
     
-    # Beräkna ett intelligent lokalt pristak som reserv (t.ex. median eller strax över snittet av billigaste hälften)
     sorted_prices = sorted(prices_96) if prices_96 else [50.0]
     local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]  # Medianpris
 
+    def build_fallback(motivering_text):
+        fallback_price_cap = max(min_price, local_smart_price_cap)
+        return {
+            "price_cap": fallback_price_cap,
+            "min_on_blocks": default_min_on_blocks,
+            "preheat_hours": 0,
+            "cold_boost": 0,
+            "comfort_priority": "medium",
+            "motivering": motivering_text
+        }
+
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
-        print("[AI INFO] Använder smart lokal beräkning (AI-nyckel saknas).")
-        return max(min_price, local_smart_price_cap), default_min_on_blocks, "Använder lokal prisstatistik (Ingen AI-nyckel)."
+        return build_fallback("Använder lokal prisstatistik (Ingen AI-nyckel tillgänglig).")
 
     prompt = f"""
-    Du är en expert på energistyrning och optimering av elvärme i Norrland.
-    Här är elpriserna (96 kvartar) för {target_day_label}:
-    - Lägsta pris: {min_price:.1f} öre/kWh
-    - Högsta pris: {max_price:.1f} öre/kWh
-    - Medelpris: {avg_price:.1f} öre/kWh
-    - Samtliga 96 kvartalspriser (i ÖRE/kWh): {prices_96}
-    
-    Här är utetemperaturen (24h prognos i °C): {temp_hourly}
-    
-    VIKTIGA REGLER FÖR OPTIMERINGEN:
-    1. Enhet: Alla prisuppgifter och 'price_cap' MÅSTE anges i ÖRE/kWh (använd aldrig kr/kWh).
-    2. Pristak ('price_cap'): Pristaket MÅSTE alltid vara HÖGRE än dygnets lägsta pris (minst {min_price:.1f} öre) så att det inte blockerar hela dygnet. Sätt det där det gynnar de billigaste timmarna bäst. Sätt ALDRIG ett pristak som är lägre än dygnets lägsta pris!
-    3. Minimidriftstid ('min_on_hours'):
-       - Vid milda utetemperaturer (över 0 °C) kan drifttiden hållas lägre (4–8 timmar per dygn) och läggas på dygnets billigaste timmar.
-       - Vid kyla (under 0 °C och ned mot sträng kyla) måste minimidriftstiden ökas för att upprätthålla komfort och förhindra kallras från fönster. Systemets inbyggda körtidsfilter per timme ser till att sprida ut värmen, men grunddynamikens timmar per dygn ska spegla behovet av att hålla huset varmt.
-    
-    Svara ENBART med ett giltigt JSON-objekt enligt detta exakta format:
-    {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring>"}}
-    """
+Du är energiingenjör med expertis inom optimering av direktverkande elvärme i småhus i Norrland.
+Mål:
+1. Minimera elkostnaden.
+2. Bibehåll komfort.
+3. Undvika kallras.
+4. Utnyttja husets värmetröghet.
+5. Förvärma huset under billiga timmar.
+6. Undvika nedkylning under stark kyla.
+
+Elpriser (96 kvartar) för {target_day_label}:
+{prices_96}
+
+Temperaturprognos (24 timmar i °C):
+{temp_hourly}
+
+Prissammanfattning:
+- Minpris: {min_price:.1f} öre/kWh
+- Maxpris: {max_price:.1f} öre/kWh
+- Medelpris: {avg_price:.1f} öre/kWh
+
+Temperaturregler:
+- Över +5°C kan huset tillåtas svalna något.
+- Mellan -5°C och -15°C ska värme prioriteras tydligare.
+- Under -15°C ska komfort prioriteras.
+- Under -25°C ska besparing underordnas komfort.
+
+Värmelagring:
+- Om mycket billiga timmar kommer före kallare perioder ska huset förvärmas.
+- Om stora pristoppar kommer senare på dygnet ska billig värme köpas tidigare.
+
+Komfort:
+- Huset får aldrig riskera att kylas ut.
+- Längre köldperioder kräver jämnare uppvärmning.
+- Kallrasrisken ökar kraftigt under -15°C.
+
+Returnera ENDAST JSON:
+{{
+  "price_cap": float,
+  "min_on_hours": int,
+  "preheat_hours": int,
+  "cold_boost": int,
+  "comfort_priority": "low|medium|high",
+  "motivering": "kort svensk motivering"
+}}
+"""
 
     try:
         if GEMINI_AVAILABLE == "genai_new":
@@ -261,30 +294,39 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         
         price_cap = float(data.get("price_cap", default_price_cap))
         min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
+        preheat_hours = int(data.get("preheat_hours", 0))
+        cold_boost = int(data.get("cold_boost", 0))
+        comfort_priority = str(data.get("comfort_priority", "medium")).lower()
+        if comfort_priority not in ["low", "medium", "high"]:
+            comfort_priority = "medium"
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
         # Säkerhetsspärr: Låt aldrig pristaket vara lägre än dygnets lägsta pris
-        if prices_96:
-            if price_cap < min_price:
-                price_cap = min_price + 5.0
-                motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta prisnivå)."
+        if prices_96 and price_cap < min_price:
+            price_cap = min_price + 5.0
+            motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta pris)."
 
-        return price_cap, min_on_blocks, motivering
+        return {
+            "price_cap": price_cap,
+            "min_on_blocks": min_on_blocks,
+            "preheat_hours": preheat_hours,
+            "cold_boost": cold_boost,
+            "comfort_priority": comfort_priority,
+            "motivering": motivering
+        }
 
     except Exception as e:
         err_msg = str(e)
         print(f"[AI ERROR DETALJ]: {err_msg}")
         
-        # Intelligent lokal reservplan om API-kvoten är slut eller fel uppstår
         fallback_price_cap = max(min_price, local_smart_price_cap)
-        fallback_min_on = default_min_on_blocks
-        
         if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "Quota" in err_msg:
-            motivering = f"Reservplan aktiv: AI-kvot slut (429). Använder smart lokal beräkning (Pristak satt till medianpris: {fallback_price_cap:.1f} öre)."
+            mot_text = f"Reservplan aktiv: AI-kvot slut (429). Använder smart lokal beräkning (Pristak: {fallback_price_cap:.1f} öre)."
         else:
-            motivering = f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}). Använder lokal beräkning."
+            mot_text = f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}). Använder lokal beräkning."
 
-        return fallback_price_cap, fallback_min_on, motivering
+        return build_fallback(mot_text)
+
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
@@ -377,6 +419,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
 # --- PULP OPTIMERINGSMOTOR ---
 def generate_daily_schedule(
     prices_96, 
+    temp_hourly=None,
     max_off_blocks=8, 
     min_on_blocks=28, 
     current_temp=15.0, 
@@ -387,14 +430,38 @@ def generate_daily_schedule(
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartspriser.")
 
+    if temp_hourly is None:
+        temp_hourly = [current_temp] * 24
+
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
     
     costs = []
     for i in range(96):
         price = prices_96[i]
-        effective_cost = price - 50.0 if (price_cap is not None and price <= price_cap) else price
+        hour = i // 4
+        forecast_temp = temp_hourly[hour] if hour < len(temp_hourly) else current_temp
+        
+        # Temperaturfaktor för att gynna uppvärmning vid kyla utan negativa priser
+        temp_factor = 1.0
+        if forecast_temp <= -25:
+            temp_factor = 0.35
+        elif forecast_temp <= -20:
+            temp_factor = 0.45
+        elif forecast_temp <= -15:
+            temp_factor = 0.60
+        elif forecast_temp <= -10:
+            temp_factor = 0.75
+        elif forecast_temp <= -5:
+            temp_factor = 0.90
+
+        if price_cap is not None and price <= price_cap:
+            effective_cost = price * 0.5 * temp_factor
+        else:
+            effective_cost = price * temp_factor
+
         costs.append(x[i] * effective_cost)
+
     prob += pulp.lpSum(costs)
 
     prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
@@ -530,20 +597,57 @@ def main():
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
                     time.sleep(12)
-                    p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
+                    
+                    ai_result = get_ai_optimized_parameters(
                         prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"idag ({house_data.get('name')})"
                     )
                     
+                    p_cap = ai_result["price_cap"]
+                    m_blocks = ai_result["min_on_blocks"]
+                    preheat_hours = ai_result["preheat_hours"]
+                    cold_boost = ai_result["cold_boost"]
+                    comfort_priority = ai_result["comfort_priority"]
+                    reasoning = ai_result["motivering"]
+
+                    # Comfort priority till max_off
+                    if comfort_priority == "high":
+                        effective_max_off = min(max_off, 4)
+                    elif comfort_priority == "medium":
+                        effective_max_off = min(max_off, 8)
+                    else:
+                        effective_max_off = max_off
+
+                    # Cold boost till min_on
+                    adjusted_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
+
                     daily_schedule = generate_daily_schedule(
-                        prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks, 
-                        current_temp=current_temp, price_cap=p_cap
+                        prices_today, 
+                        temp_hourly=temp_forecast,
+                        max_off_blocks=effective_max_off, 
+                        min_on_blocks=adjusted_min_on, 
+                        current_temp=current_temp, 
+                        price_cap=p_cap
                     )
+
+                    # Preheat-hours aktivering på billigaste slottarna
+                    if preheat_hours > 0:
+                        cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
+                        extra_slots = preheat_hours * 4
+                        for slot in cheapest_slots[:extra_slots]:
+                            daily_schedule[slot] = True
                     
                     active_schedule_date = today_str
                     ref_device["price_cap"] = p_cap
                     ref_device["min_on_blocks"] = m_blocks
+                    
                     house_data["ai_latest_reasoning"] = reasoning
                     house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                    house_data["last_ai_parameters"] = {
+                        "price_cap": p_cap,
+                        "preheat_hours": preheat_hours,
+                        "cold_boost": cold_boost,
+                        "comfort_priority": comfort_priority
+                    }
                     config_updated = True
 
                 house_data["schedule_date"] = active_schedule_date
@@ -558,12 +662,41 @@ def main():
                         
                         if len(set(prices_tomorrow)) > 1: 
                             time.sleep(12)
-                            p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
+                            ai_result_tom = get_ai_optimized_parameters(
                                 prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"imorgon ({house_data.get('name')})"
                             )
+                            
+                            p_cap_tom = ai_result_tom["price_cap"]
+                            m_blocks_tom = ai_result_tom["min_on_blocks"]
+                            preheat_hours_tom = ai_result_tom["preheat_hours"]
+                            cold_boost_tom = ai_result_tom["cold_boost"]
+                            comfort_priority_tom = ai_result_tom["comfort_priority"]
+                            reasoning_tom = ai_result_tom["motivering"]
+
+                            if comfort_priority_tom == "high":
+                                effective_max_off_tom = min(max_off, 4)
+                            elif comfort_priority_tom == "medium":
+                                effective_max_off_tom = min(max_off, 8)
+                            else:
+                                effective_max_off_tom = max_off
+
+                            adjusted_min_on_tom = m_blocks_tom + (cold_boost_tom * 4) if cold_boost_tom > 0 else m_blocks_tom
+
                             new_tomorrow_sched = generate_daily_schedule(
-                                prices_tomorrow, max_off_blocks=max_off, min_on_blocks=m_blocks_tom, current_temp=current_temp, price_cap=p_cap_tom
+                                prices_tomorrow, 
+                                temp_hourly=temp_forecast_tom,
+                                max_off_blocks=effective_max_off_tom, 
+                                min_on_blocks=adjusted_min_on_tom, 
+                                current_temp=current_temp, 
+                                price_cap=p_cap_tom
                             )
+
+                            if preheat_hours_tom > 0:
+                                cheapest_slots_tom = sorted(range(len(prices_tomorrow)), key=lambda i: prices_tomorrow[i])
+                                extra_slots_tom = preheat_hours_tom * 4
+                                for slot in cheapest_slots_tom[:extra_slots_tom]:
+                                    new_tomorrow_sched[slot] = True
+
                             house_data["tomorrow_schedule_date"] = tomorrow_str
                             house_data["tomorrow_schedule"] = new_tomorrow_sched
                             house_data["ai_latest_reasoning"] = reasoning_tom
@@ -589,8 +722,12 @@ def main():
                     dev_schedule = daily_schedule
                     if dev_max_off != max_off or dev_min_on != min_on or dev_price_cap != price_cap:
                         dev_schedule = generate_daily_schedule(
-                            prices_today, max_off_blocks=dev_max_off, min_on_blocks=dev_min_on, 
-                            current_temp=current_temp, price_cap=dev_price_cap
+                            prices_today, 
+                            temp_hourly=temp_forecast,
+                            max_off_blocks=dev_max_off, 
+                            min_on_blocks=dev_min_on, 
+                            current_temp=current_temp, 
+                            price_cap=dev_price_cap
                         )
 
                     if dev_type == "thermostat":
