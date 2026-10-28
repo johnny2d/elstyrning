@@ -207,21 +207,34 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
         pass
 
     return 5.0
+
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
     if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
         return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
 
+    min_price = min(prices_96) if prices_96 else 50.0
+    max_price = max(prices_96) if prices_96 else 100.0
+    avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
+
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
-    Här är elpriserna (96 kvartar, angivna i ÖRE per kWh) för {target_day_label}: {prices_96}
-    Här är utetemperaturen (24h i °C): {temp_hourly}
+    Här är elpriserna (96 kvartar) för {target_day_label}:
+    - Lägsta pris: {min_price:.1f} öre/kWh
+    - Högsta pris: {max_price:.1f} öre/kWh
+    - Medelpris: {avg_price:.1f} öre/kWh
+    - Samtliga 96 kvartalspriser (i ÖRE/kWh): {prices_96}
+    
+    Här är utetemperaturen (24h prognos i °C): {temp_hourly}
     
     VIKTIGA REGLER FÖR OPTIMERINGEN:
-    1. Priserna är angivna i ÖRE/kWh. Din motivering MÅSTE använda enheten öre/kWh (använd aldrig kr/kWh).
-    2. Vid milda utetemperaturen (över 0 °C) ska minimidriftstiden ('min_on_hours') hållas låg, förslagsvis mellan 4 och 8 timmar per dygn, för att undvika onödig uppvärmning. Slösa inte med driftstimmar när det är milt ute!
+    1. Enhet: Alla prisuppgifter och 'price_cap' MÅSTE anges i ÖRE/kWh (använd aldrig kr/kWh).
+    2. Pristak ('price_cap'): Pristaket MÅSTE alltid vara HÖGRE än dygnets lägsta pris (minst {min_price:.1f} öre) så att det inte blockerar hela dygnet. Sätt det där det gynnar de billigaste timmarna bäst. Sätt ALDRIG ett pristak som är lägre än dygnets lägsta pris!
+    3. Minimidriftstid ('min_on_hours'):
+       - Vid milda utetemperaturer (över 0 °C) kan drifttiden hållas lägre (4–8 timmar per dygn) och läggas på dygnets billigaste timmar.
+       - Vid kyla (under 0 °C och ned mot sträng kyla) måste minimidriftstiden ökas för att upprätthålla komfort och förhindra kallras från fönster. Systemets inbyggda körtidsfilter per timme ser till att sprida ut värmen, men grunddynamikens timmar per dygn ska spegla behovet av att hålla huset varmt.
     
-    Svara ENBART med ett giltigt JSON-objekt enligt detta format:
+    Svara ENBART med ett giltigt JSON-objekt enligt detta exakta format:
     {{"price_cap": <flyttal>, "min_on_hours": <heltal>, "motivering": "<kort svensk förklaring>"}}
     """
 
@@ -243,13 +256,18 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
+        # Säkerhetsspärr: Låt aldrig pristaket vara lägre än dygnets lägsta pris
+        if prices_96:
+            if price_cap < min_price:
+                print(f"[AI VARNING] AI satte ett för lågt pristak ({price_cap} öre) givet att lägsta pris är {min_price} öre. Justerar upp automatiskt.")
+                price_cap = min_price + 5.0
+                motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta prisnivå)."
+
         return price_cap, min_on_blocks, motivering
 
     except Exception as e:
-        print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/kvot nådd): {str(e)[:50]}")
-        return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd)."
-
-
+        print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/fel uppstod): {str(e)[:50]}")
+        return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd eller fel)."
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
@@ -268,7 +286,6 @@ def set_tuya_device(device_id: str, value, device_type: str = "switch"):
             
             if device_type == "thermostat":
                 code_names = ["temp_set", "target_temp", "set_temp"]
-                # Vissa termostater förväntar sig värdet multiplicerat med 10 om det är heltal, eller direkt
                 cmd_value = int(value * 10) if isinstance(value, float) and value < 50 else value
             else:
                 code_names = ["switch", "switch_1", "switch_heat"]
@@ -496,7 +513,6 @@ def main():
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
-                    # Vänta 12 sekunder mellan anropen för att respektera API:ets minutkvot (RPM)
                     time.sleep(12)
                     p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
                         prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"idag ({house_data.get('name')})"
@@ -525,7 +541,6 @@ def main():
                         temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
                         
                         if len(set(prices_tomorrow)) > 1: 
-                            # Paus för att inte slå i kvoten vid beräkning av morgondagens schema
                             time.sleep(12)
                             p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
                                 prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"imorgon ({house_data.get('name')})"
@@ -562,7 +577,6 @@ def main():
                             current_temp=current_temp, price_cap=dev_price_cap
                         )
 
-                    # --- HANTERING AV TERMOSTAT VS SWITCH ---
                     if dev_type == "thermostat":
                         t_high = float(dev.get("target_temp_high", 10.0))
                         t_low = float(dev.get("target_temp_low", 6.0))
@@ -599,7 +613,6 @@ def main():
                         set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
                         time.sleep(2)
 
-                        # Hämta uppmätt temperatur från enheten, fallback till simulerat rimligt värde
                         connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat")
                         if measured_dev_temp is None:
                             measured_dev_temp = round(19.0 + (1.0 if target_temp_val >= 10 else -0.5), 1)
@@ -618,7 +631,6 @@ def main():
                         history.append(log_entry)
 
                     else:
-                        # Vanlig switch/relä-logik
                         should_be_on = False
                         reason = "Okänd anledning"
 
@@ -658,7 +670,7 @@ def main():
                             "price": round(current_price, 2),
                             "status": final_status,
                             "temp": round(current_temp, 1),
-                            "device_temp": round(current_temp, 1), # Fallback
+                            "device_temp": round(current_temp, 1),
                             "reason": reason
                         }
                         history.append(log_entry)
