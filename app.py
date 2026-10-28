@@ -196,7 +196,7 @@ else:
     tab_dash, tab_hist, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- TAB 1: DASHBOARD & NYA SNGGGA PANELENHETER ---
+# --- TAB 1: DASHBOARD ---
 with tab_dash:
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
@@ -235,7 +235,6 @@ with tab_dash:
             dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
             for idx, dev in enumerate(devs):
                 with dev_cols[idx % 3]:
-                    # Snygg container-stil med CSS-känsla
                     with st.container(border=True):
                         st.markdown(f"#### 🔌 {dev.get('name')}")
                         is_term = dev.get("type") == "thermostat"
@@ -286,10 +285,6 @@ with tab_hist:
                 else:
                     hist_on_mask = df['status'].astype(str).str.upper() == 'ON'
                 
-                hist_on_snitt = df.loc[hist_on_mask, 'price'].mean() if hist_on_mask.any() else 0.0
-                hist_diff = hist_snitt - hist_on_snitt
-                hist_effekt = ((hist_snitt - hist_on_snitt) / hist_snitt * 100) if hist_snitt > 0 else 0.0
-
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Aktuellt pris", f"{latest.get('price', 0):.2f} öre/kWh")
                 c2.metric("Måltemp / Status", latest.get('status', 'N/A'))
@@ -301,17 +296,27 @@ with tab_hist:
                     fig.add_trace(go.Scatter(x=df['time'], y=df['status_val'], name="Måltemperatur (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
                 else:
                     status_colors = df['status'].apply(lambda x: '#2ecc71' if str(x).upper() == 'ON' else '#e74c3c')
-                    fig.add_trace(go.Scatter(x=df['time'], y=df['status_num'], name="Status", mode="lines+markers", line=dict(shape="hv", color="rgba(150,150,150,0.3)"), marker=dict(color=status_colors)), secondary_y=True)
+                    status_labels = df['status'].apply(lambda x: 'PÅ 🟢' if str(x).upper() == 'ON' else 'AV 🔴')
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df['time'], y=df['status_num'], name="Status", mode="lines+markers",
+                            line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=2),
+                            marker=dict(size=8, color=status_colors, symbol="circle"),
+                            customdata=status_labels,
+                            hovertemplate="Tid: %{x|%H:%M}<br>Status: %{customdata}<extra></extra>"
+                        ),
+                        secondary_y=True
+                    )
 
                 fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
                 fig.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("Ingen historik för denna enhet ännu.")
         else:
             st.info("Ingen historik registrerad ännu.")
 
-# --- TAB 3: ENHETSINSTÄLLNINGAR ---
+# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD ---
 with tab_settings:
     if not current_device:
         st.info("Ingen enhet vald.")
@@ -325,6 +330,7 @@ with tab_settings:
         else:
             min_on = st.slider("Minsta körtid per dygn (timmar)", 4, 24, int(current_device.get("min_on_blocks", 44) / 4))
             max_off = st.slider("Max avstängning i rad (timmar)", 1, 6, int(current_device.get("max_off_blocks", 12) / 4))
+            price_cap = st.number_input("Pristak (öre/kWh)", min_value=1.0, max_value=500.0, value=float(current_device.get("price_cap", 50.0)), step=1.0)
 
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
@@ -332,12 +338,21 @@ with tab_settings:
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
-                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4, "force_override": force})
+                current_device.update({"min_on_blocks": min_on * 4, "max_off_blocks": max_off * 4, "price_cap": price_cap, "force_override": force})
             save_config(config)
             st.cache_data.clear()
             st.rerun()
 
-# --- TAB 4: SCHEMA & PRISER (MED IDAG / IMORGON VÄLJARE) ---
+    st.divider()
+    st.subheader("🔑 Ändra lösenord för detta hus")
+    new_h_pw_input = st.text_input("Nytt lösenord för huset", type="password")
+    if st.button("Uppdatera husets lösenord"):
+        if new_h_pw_input:
+            current_house["password"] = new_h_pw_input
+            save_config(config)
+            st.success("Lösenordet har uppdaterats!")
+
+# --- TAB 4: SCHEMA & PRISER (MED PERSISTENS FÖR MORGONDAGEN) ---
 with tab_sched:
     st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
     
@@ -380,6 +395,11 @@ with tab_sched:
                     price_cap = current_device.get("price_cap", 50.0)
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
                     schedule = generate_daily_schedule(prices, max_off_blocks=max_off, min_on_blocks=min_on, current_temp=curr_temp, price_cap=price_cap)
+                    
+                    # Spara ner permanent till Gist så det inte tappas bort
+                    current_house["tomorrow_schedule"] = schedule
+                    current_house["tomorrow_schedule_date"] = tomorrow_str
+                    save_config(config)
 
             times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
 
@@ -388,14 +408,33 @@ with tab_sched:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
                 vals = [t_high if s else t_low for s in schedule[:len(times)]]
-                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Måltemp (°C)", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
             else:
                 vals = [1 if s else 0 for s in schedule[:len(times)]]
-                fig_s.add_trace(go.Scatter(x=times, y=vals, name="Planerad Status", mode="lines", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
+                status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]]
+                status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule[:len(times)]]
+                
+                fig_s.add_trace(
+                    go.Scatter(
+                        x=times, y=vals,
+                        name="Status", mode="lines+markers",
+                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=2),
+                        marker=dict(size=8, color=status_colors, symbol="circle"),
+                        customdata=status_labels,
+                        hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
+                    ),
+                    secondary_y=True
+                )
 
             fig_s.add_trace(go.Scatter(x=times, y=prices[:len(times)], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
             fig_s.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_s, width='stretch')
+            fig_s.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
+            if is_thermostat:
+                fig_s.update_yaxes(title_text="Måltemperatur (°C)", secondary_y=True)
+            else:
+                fig_s.update_yaxes(title_text="Status", tickvals=[0, 1], ticktext=["AV 🔴", "PÅ 🟢"], range=[-0.2, 1.2], secondary_y=True)
+
+            st.plotly_chart(fig_s, use_container_width=True)
 
 # --- TAB 5: SYSTEM ADMIN ---
 if is_admin and tab_admin:
