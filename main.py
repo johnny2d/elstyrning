@@ -210,15 +210,19 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
 
 # --- AI STRATEGEN (GEMINI) ---
 # --- AI STRATEGEN (GEMINI) ---
+# --- AI STRATEGEN (GEMINI) MED SMART LOKAL FALLBACK ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
-    if not GEMINI_API_KEY:
-        return default_price_cap, default_min_on_blocks, "Fel: Ingen GEMINI_API_KEY är konfigurerad i miljövariablerna."
-    if not GEMINI_AVAILABLE:
-        return default_price_cap, default_min_on_blocks, "Fel: Generative AI SDK (google-genai) kunde inte importeras i mjukvarumiljön."
-
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
+    
+    # Beräkna ett intelligent lokalt pristak som reserv (t.ex. median eller strax över snittet av billigaste hälften)
+    sorted_prices = sorted(prices_96) if prices_96 else [50.0]
+    local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]  # Medianpris
+
+    if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
+        print("[AI INFO] Använder smart lokal beräkning (AI-nyckel saknas).")
+        return max(min_price, local_smart_price_cap), default_min_on_blocks, "Använder lokal prisstatistik (Ingen AI-nyckel)."
 
     prompt = f"""
     Du är en expert på energistyrning och optimering av elvärme i Norrland.
@@ -262,7 +266,6 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         # Säkerhetsspärr: Låt aldrig pristaket vara lägre än dygnets lägsta pris
         if prices_96:
             if price_cap < min_price:
-                print(f"[AI VARNING] AI satte ett för lågt pristak ({price_cap} öre) givet att lägsta pris är {min_price} öre. Justerar upp automatiskt.")
                 price_cap = min_price + 5.0
                 motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta prisnivå)."
 
@@ -272,15 +275,16 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         err_msg = str(e)
         print(f"[AI ERROR DETALJ]: {err_msg}")
         
-        # Identifiera specifik felorsak
-        if "429" in err_msg or "ResourceExhausted" in err_msg or "Quota" in err_msg or "quota" in err_msg:
-            fel_orsak = "Fel: API-kvot/Rate Limit för Gemini har uppnåtts (HTTP 429). För många anrop skickade på kort tid."
-        elif "JSON" in err_msg or "json" in err_msg or "loads" in err_msg:
-            fel_orsak = f"Fel: Kunde inte tolka AI-svaret som giltig JSON. Råtext: {raw_text[:100] if 'raw_text' in locals() else 'N/A'}"
+        # Intelligent lokal reservplan om API-kvoten är slut eller fel uppstår
+        fallback_price_cap = max(min_price, local_smart_price_cap)
+        fallback_min_on = default_min_on_blocks
+        
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "Quota" in err_msg:
+            motivering = f"Reservplan aktiv: AI-kvot slut (429). Använder smart lokal beräkning (Pristak satt till medianpris: {fallback_price_cap:.1f} öre)."
         else:
-            fel_orsak = f"Fel vid AI-anrop: {err_msg[:120]}"
-            
-        return default_price_cap, default_min_on_blocks, fel_orsak
+            motivering = f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}). Använder lokal beräkning."
+
+        return fallback_price_cap, fallback_min_on, motivering
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
