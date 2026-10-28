@@ -490,6 +490,8 @@ def main():
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
+                    # Vänta 12 sekunder mellan anropen för att respektera API:ets minutkvot (RPM)
+                    time.sleep(12)
                     p_cap, m_blocks, reasoning = get_ai_optimized_parameters(
                         prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"idag ({house_data.get('name')})"
                     )
@@ -517,7 +519,8 @@ def main():
                         temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
                         
                         if len(set(prices_tomorrow)) > 1: 
-                            time.sleep(1)
+                            # Paus för att inte slå i kvoten vid beräkning av morgondagens schema
+                            time.sleep(12)
                             p_cap_tom, m_blocks_tom, reasoning_tom = get_ai_optimized_parameters(
                                 prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"imorgon ({house_data.get('name')})"
                             )

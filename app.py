@@ -4,7 +4,7 @@ import requests
 from zoneinfo import ZoneInfo
 sweden_tz = ZoneInfo("Europe/Stockholm")
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -212,7 +212,8 @@ with st.sidebar:
                     daily_sched = generate_daily_schedule(
                         prices_today, max_off_blocks=max_off, min_on_blocks=m_blocks_today, current_temp=current_temp, price_cap=p_cap_today
                     )
-
+                    # Lägg till paus innan nästa hus beräknas i forceringen
+                    time.sleep(12)
                     h_data["schedule_date"] = today_str
                     h_data["daily_schedule"] = daily_sched
                     h_data["ai_latest_reasoning"] = reasoning_today
