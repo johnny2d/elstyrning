@@ -323,7 +323,7 @@ with tab_hist:
 
                 fig.add_trace(go.Scatter(x=df['time'], y=df['price'], name="Elpris (öre/kWh)", line=dict(color="#29b6f6")), secondary_y=False)
                 fig.update_layout(hovermode="x unified", height=400, margin=dict(l=10, r=10, t=30, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+
                 st.plotly_chart(fig, width='stretch')
                 
                 # --- HÄR ÄR RÅDATA-LOGGEN SOM SAKNADES ---
