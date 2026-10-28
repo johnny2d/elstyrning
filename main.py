@@ -209,9 +209,12 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
+# --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
-    if not GEMINI_API_KEY or not GEMINI_AVAILABLE:
-        return default_price_cap, default_min_on_blocks, "Ingen AI-nyckel tillgänglig."
+    if not GEMINI_API_KEY:
+        return default_price_cap, default_min_on_blocks, "Fel: Ingen GEMINI_API_KEY är konfigurerad i miljövariablerna."
+    if not GEMINI_AVAILABLE:
+        return default_price_cap, default_min_on_blocks, "Fel: Generative AI SDK (google-genai) kunde inte importeras i mjukvarumiljön."
 
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
@@ -266,9 +269,18 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return price_cap, min_on_blocks, motivering
 
     except Exception as e:
-        print(f"[AI INFO] Använder standardparametrar (AI-anrop hoppades över/fel uppstod): {str(e)[:50]}")
-        return default_price_cap, default_min_on_blocks, "Använder standardparametrar (AI-kvot nådd eller fel)."
-
+        err_msg = str(e)
+        print(f"[AI ERROR DETALJ]: {err_msg}")
+        
+        # Identifiera specifik felorsak
+        if "429" in err_msg or "ResourceExhausted" in err_msg or "Quota" in err_msg or "quota" in err_msg:
+            fel_orsak = "Fel: API-kvot/Rate Limit för Gemini har uppnåtts (HTTP 429). För många anrop skickade på kort tid."
+        elif "JSON" in err_msg or "json" in err_msg or "loads" in err_msg:
+            fel_orsak = f"Fel: Kunde inte tolka AI-svaret som giltig JSON. Råtext: {raw_text[:100] if 'raw_text' in locals() else 'N/A'}"
+        else:
+            fel_orsak = f"Fel vid AI-anrop: {err_msg[:120]}"
+            
+        return default_price_cap, default_min_on_blocks, fel_orsak
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
