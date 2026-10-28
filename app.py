@@ -196,12 +196,31 @@ else:
     tab_dash, tab_hist, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "📊 Övervakning & Graf", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- TAB 1: DASHBOARD ---
+# --- TAB 1: DASHBOARD (MED SNITTPRIS OCH PROCENTBESPARING) ---
 with tab_dash:
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
     outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56)) if current_house else 0.0
     
+    # Hämta dagens priser och dagschema för beräkning av snitt och besparing %
+    now = datetime.now(sweden_tz)
+    house_zone = current_house.get("zone", "SE2") if current_house else "SE2"
+    today_prices = get_nordpool_price(zone=house_zone, target_date=now)
+    
+    avg_day_price = 0.0
+    active_saving_pct = 0.0
+    if today_prices and len(today_prices) > 0:
+        avg_day_price = sum(today_prices) / len(today_prices)
+        
+        if current_house and "daily_schedule" in current_house:
+            sched = current_house["daily_schedule"]
+            active_prices = [today_prices[i] for i in range(min(len(today_prices), len(sched))) if sched[i]]
+            if active_prices:
+                avg_active_price = sum(active_prices) / len(active_prices)
+                if avg_day_price > 0:
+                    active_saving_pct = max(0.0, ((avg_day_price - avg_active_price) / avg_day_price) * 100.0)
+
+    # Beräkna även veckans besparing i kronor
     week_savings_kr = 0.0
     if history and current_house:
         df_h = pd.DataFrame(history)
@@ -212,19 +231,20 @@ with tab_dash:
                 week_ago = datetime.now() - timedelta(days=7)
                 df_week = df_h[df_h['dt'] >= week_ago]
                 if not df_week.empty and 'price' in df_week.columns:
-                    avg_price = df_week['price'].mean()
+                    w_avg = df_week['price'].mean()
                     active_mask = df_week['status'].astype(str).str.upper().isin(['ON', 'TRUE']) | (df_week['status'].astype(str).str.contains('°C'))
-                    active_prices = df_week.loc[active_mask, 'price']
-                    if not active_prices.empty:
-                        saved_ore = avg_price - active_prices.mean()
-                        est_kwh = len(active_prices) * 0.5 * 2.0
+                    active_p = df_week.loc[active_mask, 'price']
+                    if not active_p.empty:
+                        saved_ore = w_avg - active_p.mean()
+                        est_kwh = len(active_p) * 0.5 * 2.0
                         week_savings_kr = max(0.0, (saved_ore * est_kwh) / 100.0)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Utetemperatur", f"{outside_temp:.1f} °C")
-    c2.metric("Elområde", current_house.get("zone", "SE2") if current_house else "-")
-    c3.metric("Antal enheter", len(current_house.get("devices", [])) if current_house else 0)
-    c4.metric("Estimerad besparing (7 dgr)", f"{week_savings_kr:.2f} kr")
+    c2.metric("Elpris snitt (idag)", f"{avg_day_price:.1f} öre/kWh")
+    c3.metric("Besparing (idag)", f"{active_saving_pct:.1f} %")
+    c4.metric("Besparing (7 dgr)", f"{week_savings_kr:.2f} kr")
+    c5.metric("Aktivt hus", current_house.get('name', 'Inget') if current_house else "-")
 
     st.divider()
     st.markdown("### 🎛️ Husets Enheter (Paneler)")
@@ -346,7 +366,7 @@ with tab_settings:
             save_config(config)
             st.success("Lösenordet har uppdaterats!")
 
-# --- TAB 4: SCHEMA & PRISER (UTÖKADE PUNKTER FÖR HELTÄCKANDE LINJER) ---
+# --- TAB 4: SCHEMA & PRISER ---
 with tab_sched:
     st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
     
