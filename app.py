@@ -177,6 +177,8 @@ with st.sidebar:
                         
                         ai_res = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), target_day_label=f"idag ({h_data.get('name')})")
                         p_cap = ai_res["price_cap"]
+                        req_runtime = ai_res["required_runtime_hours"]
+                        max_off_h = ai_res["max_consecutive_off_hours"]
                         preheat_hours = ai_res["preheat_hours"]
                         reasoning = ai_res["motivering"]
 
@@ -184,7 +186,9 @@ with st.sidebar:
                             prices, 
                             temp_hourly=forecast, 
                             current_temp=curr_temp, 
-                            price_cap=p_cap
+                            price_cap=p_cap,
+                            required_runtime_hours=req_runtime,
+                            max_consecutive_off_hours=max_off_h
                         )
                         
                         if preheat_hours > 0:

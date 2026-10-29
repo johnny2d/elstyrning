@@ -209,22 +209,21 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
-def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, default_min_on_blocks=44, target_day_label="idag"):
+def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, target_day_label="idag"):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
     
     sorted_prices = sorted(prices_96) if prices_96 else [50.0]
-    local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]  # Medianpris
+    local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]
 
     def build_fallback(motivering_text):
         fallback_price_cap = max(min_price, local_smart_price_cap)
         return {
             "price_cap": fallback_price_cap,
-            "min_on_blocks": default_min_on_blocks,
+            "required_runtime_hours": 6,
+            "max_consecutive_off_hours": 8,
             "preheat_hours": 0,
-            "cold_boost": 0,
-            "comfort_priority": "medium",
             "motivering": motivering_text
         }
 
@@ -236,10 +235,7 @@ Du är energiingenjör med expertis inom optimering av direktverkande elvärme i
 Mål:
 1. Minimera elkostnaden.
 2. Bibehåll komfort.
-3. Undvika kallras.
-4. Utnyttja husets värmetröghet.
-5. Förvärma huset under billiga timmar.
-6. Undvika nedkylning under stark kyla.
+3. Undvika kallras genom att inte stänga av värmen för länge i sträck.
 
 Elpriser (96 kvartar) för {target_day_label}:
 {prices_96}
@@ -252,28 +248,17 @@ Prissammanfattning:
 - Maxpris: {max_price:.1f} öre/kWh
 - Medelpris: {avg_price:.1f} öre/kWh
 
-Temperaturregler:
-- Över +5°C kan huset tillåtas svalna något.
-- Mellan -5°C och -15°C ska värme prioriteras tydligare.
-- Under -15°C ska komfort prioriteras.
-- Under -25°C ska besparing underordnas komfort.
-
-Värmelagring:
-- Om mycket billiga timmar kommer före kallare perioder ska huset förvärmas.
-- Om stora pristoppar kommer senare på dygnet ska billig värme köpas tidigare.
-
-Komfort:
-- Huset får aldrig riskera att kylas ut.
-- Längre köldperioder kräver jämnare uppvärmning.
-- Kallrasrisken ökar kraftigt under -15°C.
+Regler för rekommendation:
+- Milt väder (+2°C till +8°C): Räcker ofta med 4-8 timmars total drifttid. Max 8-10 timmar sammanhängande AV.
+- Kalt väder (0°C till -10°C): Kräver 8-12 timmars drifttid. Max 4-6 timmar sammanhängande AV.
+- Sträng kyla (under -15°C): Kräver 12-18 timmars drifttid. Max 2-3 timmar sammanhängande AV.
 
 Returnera ENDAST JSON:
 {{
   "price_cap": float,
-  "min_on_hours": int,
+  "required_runtime_hours": int,
+  "max_consecutive_off_hours": int,
   "preheat_hours": int,
-  "cold_boost": int,
-  "comfort_priority": "low|medium|high",
   "motivering": "kort svensk motivering"
 }}
 """
@@ -293,25 +278,20 @@ Returnera ENDAST JSON:
         data = json.loads(clean_json)
         
         price_cap = float(data.get("price_cap", default_price_cap))
-        min_on_blocks = int(data.get("min_on_hours", int(default_min_on_blocks / 4))) * 4
+        required_runtime_hours = int(data.get("required_runtime_hours", 6))
+        max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 8))
         preheat_hours = int(data.get("preheat_hours", 0))
-        cold_boost = int(data.get("cold_boost", 0))
-        comfort_priority = str(data.get("comfort_priority", "medium")).lower()
-        if comfort_priority not in ["low", "medium", "high"]:
-            comfort_priority = "medium"
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
-        # Säkerhetsspärr: Låt aldrig pristaket vara lägre än dygnets lägsta pris
         if prices_96 and price_cap < min_price:
             price_cap = min_price + 5.0
             motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta pris)."
 
         return {
             "price_cap": price_cap,
-            "min_on_blocks": min_on_blocks,
+            "required_runtime_hours": required_runtime_hours,
+            "max_consecutive_off_hours": max_consecutive_off_hours,
             "preheat_hours": preheat_hours,
-            "cold_boost": cold_boost,
-            "comfort_priority": comfort_priority,
             "motivering": motivering
         }
 
@@ -416,14 +396,16 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     
     return False, ("OFF" if device_type == "switch" else "N/A"), None
 
-# --- PULP OPTIMERINGSMOTOR (HELT FRI UTAN HÅRDA BLOCK) ---
+# --- PULP OPTIMERINGSMOTOR (MED AI-STYRDA DYNAMISKA RAMAR) ---
 def generate_daily_schedule(
     prices_96, 
     temp_hourly=None,
     current_temp=15.0, 
     cold_threshold=5.0, 
     min_minutes_cold=15, 
-    price_cap=50.0
+    price_cap=50.0,
+    required_runtime_hours=6,
+    max_consecutive_off_hours=8
 ):
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartspriser.")
@@ -437,38 +419,30 @@ def generate_daily_schedule(
     costs = []
     for i in range(96):
         price = prices_96[i]
-        hour = i // 4
-        forecast_temp = temp_hourly[hour] if hour < len(temp_hourly) else current_temp
         
-        # Temperaturfaktor för att väga in kyla
-        temp_factor = 1.0
-        if forecast_temp <= -25:
-            temp_factor = 0.35
-        elif forecast_temp <= -20:
-            temp_factor = 0.45
-        elif forecast_temp <= -15:
-            temp_factor = 0.60
-        elif forecast_temp <= -10:
-            temp_factor = 0.75
-        elif forecast_temp <= -5:
-            temp_factor = 0.90
-
-        # Om priset är under pristaket får det kraftig rabatt, annars tungt straff
         if price_cap is not None and price <= price_cap:
-            effective_cost = price * 0.1 * temp_factor
+            effective_cost = price * 0.2
         else:
-            effective_cost = price * 10.0 * temp_factor
+            effective_cost = price * 2.0
 
         costs.append(x[i] * effective_cost)
 
-    # 1. Minimera totala kostnaden helt fritt
     prob += pulp.lpSum(costs)
 
-    # 2. Förhindra snabbt flimmer (enkel relä-skyddsregel)
+    # 1. AI-dynamiskt krav på total drifttid
+    required_blocks = max(4, min(96, required_runtime_hours * 4))
+    prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
+
+    # 2. AI-dynamiskt krav på MAX sammanhängande AV-tid (förhindrar 18h stopp)
+    max_off_slots = max(4, max_consecutive_off_hours * 4)
+    for i in range(96 - max_off_slots):
+        prob += pulp.lpSum([x[j] for j in range(i, i + max_off_slots + 1)]) >= 1
+
+    # 3. Reläskydd (förhindra flimmer)
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
-    # 3. Om det är extrem kyla, säkerställ grundläggande köldskydd per timma
+    # 4. Köldskydd
     if current_temp <= cold_threshold and min_minutes_cold > 0:
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
         for hour in range(24):
@@ -590,6 +564,8 @@ def main():
                     )
                     
                     p_cap = ai_result["price_cap"]
+                    req_runtime = ai_result["required_runtime_hours"]
+                    max_off_h = ai_result["max_consecutive_off_hours"]
                     preheat_hours = ai_result["preheat_hours"]
                     reasoning = ai_result["motivering"]
 
@@ -597,7 +573,9 @@ def main():
                         prices_today, 
                         temp_hourly=temp_forecast,
                         current_temp=current_temp, 
-                        price_cap=p_cap
+                        price_cap=p_cap,
+                        required_runtime_hours=req_runtime,
+                        max_consecutive_off_hours=max_off_h
                     )
 
                     if preheat_hours > 0:
@@ -629,6 +607,8 @@ def main():
                             )
                             
                             p_cap_tom = ai_result_tom["price_cap"]
+                            req_runtime_tom = ai_result_tom["required_runtime_hours"]
+                            max_off_h_tom = ai_result_tom["max_consecutive_off_hours"]
                             preheat_hours_tom = ai_result_tom["preheat_hours"]
                             reasoning_tom = ai_result_tom["motivering"]
 
@@ -636,7 +616,9 @@ def main():
                                 prices_tomorrow, 
                                 temp_hourly=temp_forecast_tom,
                                 current_temp=current_temp, 
-                                price_cap=p_cap_tom
+                                price_cap=p_cap_tom,
+                                required_runtime_hours=req_runtime_tom,
+                                max_consecutive_off_hours=max_off_h_tom
                             )
 
                             if preheat_hours_tom > 0:
