@@ -420,8 +420,6 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
 def generate_daily_schedule(
     prices_96, 
     temp_hourly=None,
-    max_off_blocks=8, 
-    min_on_blocks=28, 
     current_temp=15.0, 
     cold_threshold=5.0, 
     min_minutes_cold=15, 
@@ -442,7 +440,7 @@ def generate_daily_schedule(
         hour = i // 4
         forecast_temp = temp_hourly[hour] if hour < len(temp_hourly) else current_temp
         
-        # Temperaturfaktor för att gynna uppvärmning vid kyla utan negativa priser
+        # Temperaturfaktor för att väga in kyla
         temp_factor = 1.0
         if forecast_temp <= -25:
             temp_factor = 0.35
@@ -455,31 +453,22 @@ def generate_daily_schedule(
         elif forecast_temp <= -5:
             temp_factor = 0.90
 
+        # Om priset är under pristaket får det kraftig rabatt (prioriteras hårt av PuLP)
         if price_cap is not None and price <= price_cap:
-            effective_cost = price * 0.5 * temp_factor
+            effective_cost = price * 0.1 * temp_factor  # Aggressiv rabatt under taket
         else:
-            effective_cost = price * temp_factor
+            effective_cost = price * 10.0 * temp_factor # Tungt straff över taket
 
         costs.append(x[i] * effective_cost)
 
+    # 1. Minimera totala kostnaden helt fritt
     prob += pulp.lpSum(costs)
 
-    prob += pulp.lpSum([x[i] for i in range(96)]) >= min_on_blocks
-
-    for i in range(96 - max_off_blocks):
-        prob += pulp.lpSum([x[j] for j in range(i, i + max_off_blocks + 1)]) >= 1
-
+    # 2. Förhindra snabbt flimmer (enkel relä-skyddsregel)
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
-    for i in range(4, 96):
-        prev_price = prices_96[i - 4]
-        curr_price = prices_96[i]
-        if prev_price > 60.0 and (curr_price <= prev_price * 0.70 or (prev_price - curr_price) >= 30.0):
-            end_slot = min(96, i + 3)
-            for j in range(i, end_slot):
-                prob += x[j] == 1
-
+    # 3. Om det är extrem kyla, säkerställ grundläggande köldskydd per timma
     if current_temp <= cold_threshold and min_minutes_cold > 0:
         blocks_per_hour_required = max(1, min_minutes_cold // 15)
         for hour in range(24):
@@ -489,7 +478,6 @@ def generate_daily_schedule(
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
-
 # --- HUVUDLOGIK (FLERBOSTADSSPECIFIK) ---
 def main():
     try:
