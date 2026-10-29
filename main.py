@@ -222,8 +222,10 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return {
             "price_cap": fallback_price_cap,
             "required_runtime_hours": 6,
-            "max_consecutive_off_hours": 8,
+            "max_consecutive_off_hours": 6,
             "preheat_hours": 0,
+            "comfort_priority": "medium",
+            "price_pattern": "volatile",
             "motivering": motivering_text
         }
 
@@ -231,12 +233,22 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return build_fallback("Använder lokal prisstatistik (Ingen AI-nyckel tillgänglig).")
 
     prompt = f"""
-Du är energiingenjör med expertis inom optimering av direktverkande elvärme i småhus i Norrland.
-Mål:
-1. Minimera elkostnaden.
-2. Bibehåll komfort.
-3. Undvika kallras genom att inte stänga av värmen för länge i sträck.
+Du är en senior energiingenjör med expertis inom:
+- direktverkande elvärme
+- hus i kallt nordiskt klimat
+- värmetröghet i byggnader
+- optimering mot Nordpools kvartspriser
+- komfort och kallrasskydd
 
+MÅL
+Ditt uppdrag är att minimera dygnets totala uppvärmningskostnad samtidigt som huset hålls behagligt och inte riskerar att kylas ut.
+Huset ska betraktas som ett värmelager.
+Billig el ska användas för att bygga upp värme när det är möjligt.
+Dyr el ska undvikas när lagrad värme rimligen kan användas istället.
+
+==================================================
+INDATA
+==================================================
 Elpriser (96 kvartar) för {target_day_label}:
 {prices_96}
 
@@ -248,19 +260,92 @@ Prissammanfattning:
 - Maxpris: {max_price:.1f} öre/kWh
 - Medelpris: {avg_price:.1f} öre/kWh
 
-Regler för rekommendation:
-- Milt väder (+2°C till +8°C): Räcker ofta med 4-8 timmars total drifttid. Max 8-10 timmar sammanhängande AV.
-- Kalt väder (0°C till -10°C): Kräver 8-12 timmars drifttid. Max 4-6 timmar sammanhängande AV.
-- Sträng kyla (under -15°C): Kräver 12-18 timmars drifttid. Max 2-3 timmar sammanhängande AV.
+==================================================
+ANALYSERA FÖRST
+==================================================
+Identifiera följande innan du ger någon rekommendation:
+1. Billiga prisfönster
+2. Dyra prisfönster
+3. Mycket dyra pristoppar
+4. Långa sammanhängande dyrperioder
+5. Dubbla lågprisperioder ("dubbelkurva")
+6. Om en kall period följer efter en billig period
+7. Om en dyr period sammanfaller med stark kyla
+8. Om prisprofilen är jämn eller volatil
 
-Returnera ENDAST JSON:
+==================================================
+VIKTIGA PRINCIPER
+==================================================
+A) VÄRMELAGRING
+Huset fungerar som ett värmelager.
+Om flera billiga timmar föregår en dyr period skall värme flyttas till dessa billigare timmar genom förvärmning.
+Om mycket låga priser förekommer före en kall natt skall förvärmning prioriteras.
+Ju längre den kommande dyrperioden är, desto större värde har förvärmning.
+Undvik dock överdriven förvärmning om dyrperioden är kort.
+
+B) TEMPERATUR OCH KOMFORT
+Över +5°C:
+- Komfortbehovet är relativt lågt.
+- Aggressivare prisoptimering kan användas.
+Mellan 0°C och -10°C:
+- Komfort och prisoptimering skall balanseras.
+Mellan -10°C och -20°C:
+- Komfortprioritet skall öka.
+- Lång avstängningstid bör undvikas.
+Under -20°C:
+- Komfort prioriteras högt.
+- Kallrasrisken är betydande.
+- Huset får inte tillåtas svalna för mycket.
+- Förvärmning före dyra perioder är ofta motiverad.
+
+C) DYRPERIODER
+Om dyrperioden är:
+Kort:
+- Begränsad förvärmning behövs.
+Medellång:
+- Måttlig förvärmning rekommenderas.
+Lång:
+- Tydlig förvärmning rekommenderas.
+- Maximal sammanhängande avstängningstid bör minskas.
+
+D) PRISMÖNSTER
+Om två tydliga lågprisfönster finns under samma dygn:
+- Fördela uppvärmningen mellan dessa.
+- Undvik att lägga all uppvärmning i ett enda block.
+Om priserna är relativt jämna över dygnet:
+- Prioritera komfort framför aggressiv optimering.
+Om stora prisskillnader förekommer:
+- Utnyttja värmetrögheten aktivt.
+
+E) SKYDDSREGLER
+- Sätt aldrig price_cap lägre än dygnets lägsta pris.
+- Sätt aldrig max_consecutive_off_hours högre än 6 (för att förhindra långa avstängningar under dagen).
+- Huset får aldrig riskera att kylas ut.
+- Långa sammanhängande perioder utan värme skall undvikas.
+- Komfort är viktigare än maximal besparing vid kraftig kyla.
+
+==================================================
+UTDATA
+==================================================
+Returnera ENDAST giltig JSON.
 {{
   "price_cap": float,
   "required_runtime_hours": int,
   "max_consecutive_off_hours": int,
   "preheat_hours": int,
+  "comfort_priority": "low|medium|high",
+  "price_pattern": "flat|single_valley|double_valley|volatile",
   "motivering": "kort svensk motivering"
 }}
+
+==================================================
+SVARSREGLER
+==================================================
+Motiveringen ska kort förklara:
+- hur temperaturprognosen påverkade beslutet
+- hur prisstrukturen påverkade beslutet
+- varför eventuell förvärmning rekommenderas
+Returnera endast JSON och ingen annan text.
 """
 
     try:
@@ -279,10 +364,16 @@ Returnera ENDAST JSON:
         
         price_cap = float(data.get("price_cap", default_price_cap))
         required_runtime_hours = int(data.get("required_runtime_hours", 6))
-        max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 8))
+        max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 6))
         preheat_hours = int(data.get("preheat_hours", 0))
+        comfort_priority = str(data.get("comfort_priority", "medium"))
+        price_pattern = str(data.get("price_pattern", "volatile"))
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
+        # Säkerhetsspärr: max 6 timmars avstängning oavsett vad AI svarar
+        if max_consecutive_off_hours > 6:
+            max_consecutive_off_hours = 6
+
         if prices_96 and price_cap < min_price:
             price_cap = min_price + 5.0
             motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta pris)."
@@ -292,6 +383,8 @@ Returnera ENDAST JSON:
             "required_runtime_hours": required_runtime_hours,
             "max_consecutive_off_hours": max_consecutive_off_hours,
             "preheat_hours": preheat_hours,
+            "comfort_priority": comfort_priority,
+            "price_pattern": price_pattern,
             "motivering": motivering
         }
 
@@ -405,7 +498,7 @@ def generate_daily_schedule(
     min_minutes_cold=15, 
     price_cap=50.0,
     required_runtime_hours=6,
-    max_consecutive_off_hours=8
+    max_consecutive_off_hours=6
 ):
     if not prices_96 or len(prices_96) != 96:
         raise ValueError("Måste skicka in exakt 96 kvartspriser.")
@@ -433,7 +526,7 @@ def generate_daily_schedule(
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
 
-    # 2. AI-dynamiskt krav på MAX sammanhängande AV-tid (förhindrar 18h stopp)
+    # 2. AI-dynamiskt krav på MAX sammanhängande AV-tid (förhindrar långa stopp)
     max_off_slots = max(4, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_slots + 1)]) >= 1
