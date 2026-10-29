@@ -749,17 +749,14 @@ def main():
                             target_temp_val = t_low
                             reason = f"[{dev_name}] Manuell överstyrning: Tvinga LÅG temp ({t_low}°C)"
                         else:
-                            if current_price <= dev_price_cap:
-                                target_temp_val = t_high
-                                reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre) -> HÖG ({t_high}°C)"
+                            if dev_schedule and len(dev_schedule) == 96:
+                                is_active = dev_schedule[quarter_index]
+                                target_temp_val = t_high if is_active else t_low
+                                reason = f"[{dev_name}] Optimeringstabell (PuLP): Temp {'HÖG (' + str(t_high) + '°C)' if is_active else 'LÅG (' + str(t_low) + '°C)'} vid {current_price:.1f} öre"
                             else:
-                                if dev_schedule and len(dev_schedule) == 96:
-                                    is_active = dev_schedule[quarter_index]
-                                    target_temp_val = t_high if is_active else t_low
-                                    reason = f"[{dev_name}] Optimeringstabell: Temp {'HÖG (' + str(t_high) + '°C)' if is_active else 'LÅG (' + str(t_low) + '°C)'} vid {current_price:.1f} öre"
-                                else:
-                                    target_temp_val = t_high
-                                    reason = f"[{dev_name}] Inget schema, kör HÖG temp"
+                                is_active = (current_price <= dev_price_cap)
+                                target_temp_val = t_high if is_active else t_low
+                                reason = f"[{dev_name}] Reservregel: Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
                             if current_temp <= cold_threshold and min_mins_cold > 0:
                                 if now.minute < min_mins_cold:
@@ -799,16 +796,12 @@ def main():
                             should_be_on = False
                             reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
                         else:
-                            if current_price <= dev_price_cap:
-                                should_be_on = True
-                                reason = f"[{dev_name}] Priset ({current_price:.1f} öre) understiger pristak ({dev_price_cap:.1f} öre)"
+                            if dev_schedule and len(dev_schedule) == 96:
+                                should_be_on = dev_schedule[quarter_index]
+                                reason = f"[{dev_name}] Optimeringstabell (PuLP): Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
                             else:
-                                if dev_schedule and len(dev_schedule) == 96:
-                                    should_be_on = dev_schedule[quarter_index]
-                                    reason = f"[{dev_name}] Optimeringstabell: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
-                                else:
-                                    should_be_on = True
-                                    reason = f"[{dev_name}] Inget schema, kör standard"
+                                should_be_on = (current_price <= dev_price_cap)
+                                reason = f"[{dev_name}] Reservregel: Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
                             if current_temp <= cold_threshold and min_mins_cold > 0:
                                 if now.minute < min_mins_cold:
