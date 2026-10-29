@@ -110,7 +110,7 @@ if not st.session_state["authenticated"]:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.title("🔒 Logga in på Elstyrningen")
-        st.caption("Ange husnamn (t.ex. 'Stugan') eller 'admin'.")
+        st.caption("Ange husnamn (t.ex. 'Karlpers') eller 'admin'.")
         with st.form("login_form"):
             u_in = st.text_input("Användarnamn")
             p_in = st.text_input("Lösenord", type="password")
@@ -132,7 +132,7 @@ with st.sidebar:
     if is_admin:
         st.subheader("👤 Inloggad: **Admin**")
         if houses:
-            selected_house_key = st.selectbox("Aktivt Hus", list(houses.keys()), format_func=lambda k: houses[k].get("name", k))
+            selected_house_key = st.selectbox("Aktivt Hus", list(houses.keys()), format_func=lambda k: f"{houses[k].get('name', k)} {'⏸️ (Pausat)' if houses[k].get('paused') else ''}")
             current_house = houses[selected_house_key]
         else:
             current_house = None
@@ -158,6 +158,8 @@ with st.sidebar:
                     now = datetime.now(sweden_tz)
                     today_str = now.strftime("%Y-%m-%d")
                     for h_key, h_data in houses.items():
+                        if h_data.get("paused", False):
+                            continue
                         time.sleep(12)
                         h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
                         h_zone, h_station = h_data.get("zone", "SE2"), h_data.get("temperatur_nu_station")
@@ -168,10 +170,44 @@ with st.sidebar:
                         
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
-                        p_cap, m_blocks, reasoning = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 24), target_day_label=f"idag ({h_data.get('name')})")
-                        sched = generate_daily_schedule(prices, max_off_blocks=96, min_on_blocks=m_blocks, current_temp=curr_temp, price_cap=p_cap)
                         
-                        h_data.update({"schedule_date": today_str, "daily_schedule": sched, "ai_latest_reasoning": reasoning, "last_ai_update": now.strftime("%Y-%m-%d %H:%M")})
+                        ai_res = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 24), target_day_label=f"idag ({h_data.get('name')})")
+                        p_cap = ai_res["price_cap"]
+                        m_blocks = ai_res["min_on_blocks"]
+                        preheat_hours = ai_res["preheat_hours"]
+                        cold_boost = ai_res["cold_boost"]
+                        comfort_priority = ai_res["comfort_priority"]
+                        reasoning = ai_res["motivering"]
+
+                        if comfort_priority == "high":
+                            eff_max_off = 4
+                        elif comfort_priority == "medium":
+                            eff_max_off = 8
+                        else:
+                            eff_max_off = 12
+
+                        adj_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
+
+                        sched = generate_daily_schedule(prices, temp_hourly=forecast, max_off_blocks=eff_max_off, min_on_blocks=adj_min_on, current_temp=curr_temp, price_cap=p_cap)
+                        
+                        if preheat_hours > 0:
+                            cheapest_slots = sorted(range(len(prices)), key=lambda i: prices[i])
+                            extra_slots = preheat_hours * 4
+                            for slot in cheapest_slots[:extra_slots]:
+                                sched[slot] = True
+
+                        h_data.update({
+                            "schedule_date": today_str, 
+                            "daily_schedule": sched, 
+                            "ai_latest_reasoning": reasoning, 
+                            "last_ai_update": now.strftime("%Y-%m-%d %H:%M"),
+                            "last_ai_parameters": {
+                                "price_cap": p_cap,
+                                "preheat_hours": preheat_hours,
+                                "cold_boost": cold_boost,
+                                "comfort_priority": comfort_priority
+                            }
+                        })
                     save_config(config)
                     st.cache_data.clear()
                     st.success("Klart!")
@@ -326,7 +362,7 @@ with tab_hist:
 
                 st.plotly_chart(fig, width='stretch')
                 
-                # --- HÄR ÄR RÅDATA-LOGGEN SOM SAKNADES ---
+                # --- RÅDATA-LOGG ---
                 with st.expander("Visa rådata / logg per kvart med orsak och status"):
                     if not df.empty:
                         cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'device_temp', 'reason'] if c in df.columns]
@@ -353,7 +389,7 @@ with tab_hist:
         else:
             st.info("Ingen historik registrerad ännu.")
 
-# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS LÖSENORD (RENSAD FRÅN MANUELLA BEGRÄNSNINGAR) ---
+# --- TAB 3: ENHETSINSTÄLLNINGAR & HUSETS INSTÄLLNINGAR ---
 with tab_settings:
     if not current_device:
         st.info("Ingen enhet vald.")
@@ -379,7 +415,20 @@ with tab_settings:
             st.rerun()
 
     st.divider()
-    st.subheader("🔑 Ändra lösenord för detta hus")
+    st.subheader("🏠 Husets inställningar & Paus")
+    
+    # Pausa huset-funktionalitet
+    paused_state = st.checkbox(
+        "Pausa huset helt (hoppa över optimering, AI och styrning)", 
+        value=current_house.get("paused", False), 
+        key=f"pause_house_{current_house.get('name')}"
+    )
+    if paused_state != current_house.get("paused", False):
+        current_house["paused"] = paused_state
+        save_config(config)
+        st.cache_data.clear()
+
+    st.markdown("<br>", unsafe_allow_html=True)
     new_h_pw_input = st.text_input("Nytt lösenord för huset", type="password")
     if st.button("Uppdatera husets lösenord"):
         if new_h_pw_input:
@@ -426,7 +475,7 @@ with tab_sched:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                    schedule = generate_daily_schedule(prices, max_off_blocks=96, min_on_blocks=24, current_temp=curr_temp, price_cap=500.0)
+                    schedule = generate_daily_schedule(prices, temp_hourly=temp_forecast, max_off_blocks=12, min_on_blocks=24, current_temp=curr_temp, price_cap=500.0)
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
@@ -499,17 +548,23 @@ if is_admin and tab_admin:
             st.success("Admin-lösenordet har uppdaterats!")
 
         st.divider()
-        st.write("### 🏠 Huslösenord")
+        st.write("### 🏠 Huslösenord & Pausläge")
         for h_k, h_v in houses.items():
-            col_a, col_b = st.columns([2, 2])
+            col_a, col_b, col_c = st.columns([2, 2, 1])
             with col_a:
-                st.write(f"**{h_v.get('name', h_k)}** (Användarnamn: `{h_v.get('name', h_k)}`)")
+                st.write(f"**{h_v.get('name', h_k)}** {'⏸️' if h_v.get('paused') else ''}")
             with col_b:
                 new_h_pw = st.text_input(f"Lösenord för {h_v.get('name')}", value=h_v.get("password", "hus123"), key=f"pw_{h_k}")
                 if new_h_pw != h_v.get("password"):
                     h_v["password"] = new_h_pw
                     save_config(config)
                     st.success(f"Lösenord för {h_v.get('name')} sparades!")
+            with col_c:
+                admin_paused = st.checkbox("Pausat", value=h_v.get("paused", False), key=f"admin_pause_{h_k}")
+                if admin_paused != h_v.get("paused", False):
+                    h_v["paused"] = admin_paused
+                    save_config(config)
+                    st.rerun()
 
         st.divider()
         st.write("### ➕ Lägg till nytt hus")
@@ -530,6 +585,7 @@ if is_admin and tab_admin:
                     "lon": new_h_lon,
                     "temperatur_nu_station": new_h_stat,
                     "zone": new_h_zone,
+                    "paused": False,
                     "devices": []
                 }
                 save_config(config)

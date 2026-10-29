@@ -553,6 +553,11 @@ def main():
         # --- LOOPA IGENOM VARJE HUS ---
         for house_key, house_data in houses.items():
             try:
+
+                # Kolla om huset är pausat
+                if house_data.get("paused", False):
+                    print(f"[PAUSED] Huset '{house_data.get('name', house_key)}' är pausat. Hoppar över.")
+                    continue
                 lat = house_data.get("lat", 63.25)
                 lon = house_data.get("lon", 14.56)
                 station = house_data.get("temperatur_nu_station", "ostersund")
