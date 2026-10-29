@@ -161,7 +161,6 @@ with st.sidebar:
                         if h_data.get("paused", False):
                             continue
                         
-                        # 1. Nollställ det gamla schemat direkt så att inte gamla spöken ligger kvar
                         h_data["daily_schedule"] = None
                         h_data["schedule_date"] = ""
                         
@@ -176,29 +175,14 @@ with st.sidebar:
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
                         
-                        ai_res = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), default_min_on_blocks=ref.get("min_on_blocks", 24), target_day_label=f"idag ({h_data.get('name')})")
+                        ai_res = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), target_day_label=f"idag ({h_data.get('name')})")
                         p_cap = ai_res["price_cap"]
-                        m_blocks = ai_res["min_on_blocks"]
                         preheat_hours = ai_res["preheat_hours"]
-                        cold_boost = ai_res["cold_boost"]
-                        comfort_priority = ai_res["comfort_priority"]
                         reasoning = ai_res["motivering"]
 
-                        if comfort_priority == "high":
-                            eff_max_off = 4
-                        elif comfort_priority == "medium":
-                            eff_max_off = 8
-                        else:
-                            eff_max_off = 12
-
-                        adj_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
-
-                        # Generera det nya schemat med rätt timprognos
                         sched = generate_daily_schedule(
                             prices, 
                             temp_hourly=forecast, 
-                            max_off_blocks=eff_max_off, 
-                            min_on_blocks=adj_min_on, 
                             current_temp=curr_temp, 
                             price_cap=p_cap
                         )
@@ -209,21 +193,13 @@ with st.sidebar:
                             for slot in cheapest_slots[:extra_slots]:
                                 sched[slot] = True
 
-                        # Uppdatera husets data med det nya schemat
                         h_data.update({
                             "schedule_date": today_str, 
                             "daily_schedule": sched, 
                             "ai_latest_reasoning": reasoning, 
-                            "last_ai_update": now.strftime("%Y-%m-%d %H:%M"),
-                            "last_ai_parameters": {
-                                "price_cap": p_cap,
-                                "preheat_hours": preheat_hours,
-                                "cold_boost": cold_boost,
-                                "comfort_priority": comfort_priority
-                            }
+                            "last_ai_update": now.strftime("%Y-%m-%d %H:%M")
                         })
                     
-                    # Spara direkt till Gist och rensa Streamlit-cachen
                     save_config(config)
                     st.cache_data.clear()
                     st.success("Nytt PuLP-schema beräknat och sparat!")
@@ -381,7 +357,6 @@ with tab_hist:
 
                 st.plotly_chart(fig, width='stretch')
                 
-                # --- RÅDATA-LOGG ---
                 with st.expander("Visa rådata / logg per kvart med orsak och status"):
                     if not df.empty:
                         cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'device_temp', 'reason'] if c in df.columns]
@@ -436,7 +411,6 @@ with tab_settings:
     st.divider()
     st.subheader("🏠 Husets inställningar & Paus")
     
-    # Pausa huset-funktionalitet
     paused_state = st.checkbox(
         "Pausa huset helt (hoppa över optimering, AI och styrning)", 
         value=current_house.get("paused", False), 
@@ -494,7 +468,7 @@ with tab_sched:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                    schedule = generate_daily_schedule(prices, temp_hourly=temp_forecast, max_off_blocks=12, min_on_blocks=24, current_temp=curr_temp, price_cap=500.0)
+                    schedule = generate_daily_schedule(prices, temp_hourly=temp_forecast, current_temp=curr_temp, price_cap=500.0)
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str

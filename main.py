@@ -416,7 +416,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     
     return False, ("OFF" if device_type == "switch" else "N/A"), None
 
-# --- PULP OPTIMERINGSMOTOR ---
+# --- PULP OPTIMERINGSMOTOR (HELT FRI UTAN HÅRDA BLOCK) ---
 def generate_daily_schedule(
     prices_96, 
     temp_hourly=None,
@@ -453,11 +453,11 @@ def generate_daily_schedule(
         elif forecast_temp <= -5:
             temp_factor = 0.90
 
-        # Om priset är under pristaket får det kraftig rabatt (prioriteras hårt av PuLP)
+        # Om priset är under pristaket får det kraftig rabatt, annars tungt straff
         if price_cap is not None and price <= price_cap:
-            effective_cost = price * 0.1 * temp_factor  # Aggressiv rabatt under taket
+            effective_cost = price * 0.1 * temp_factor
         else:
-            effective_cost = price * 10.0 * temp_factor # Tungt straff över taket
+            effective_cost = price * 10.0 * temp_factor
 
         costs.append(x[i] * effective_cost)
 
@@ -478,7 +478,8 @@ def generate_daily_schedule(
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
-# --- HUVUDLOGIK (FLERBOSTADSSPECIFIK) ---
+
+# --- HUVUDLOGIK ---
 def main():
     try:
         config, history = load_gist_data()
@@ -523,8 +524,6 @@ def main():
                                 "device_id": os.getenv("TUYA_DEVICE_ID"),
                                 "name": "Standard Enhet",
                                 "type": "switch",
-                                "max_off_blocks": config.get("max_off_blocks", 12),
-                                "min_on_blocks": config.get("min_on_blocks", 44),
                                 "price_cap": config.get("price_cap", 50.0),
                                 "cold_temp_threshold": config.get("cold_temp_threshold", 0),
                                 "min_minutes_cold": config.get("min_minutes_cold", 15),
@@ -538,11 +537,8 @@ def main():
         houses = config.get("houses", {})
         config_updated = False
 
-        # --- LOOPA IGENOM VARJE HUS ---
         for house_key, house_data in houses.items():
             try:
-
-                # Kolla om huset är pausat
                 if house_data.get("paused", False):
                     print(f"[PAUSED] Huset '{house_data.get('name', house_key)}' är pausat. Hoppar över.")
                     continue
@@ -558,8 +554,6 @@ def main():
                     continue
 
                 ref_device = devices[0]
-                max_off = ref_device.get("max_off_blocks", 12)
-                min_on = ref_device.get("min_on_blocks", 44)
                 price_cap = ref_device.get("price_cap", 50.0)
 
                 active_schedule_date = house_data.get("schedule_date")
@@ -569,12 +563,10 @@ def main():
                 tomorrow_schedule_date = house_data.get("tomorrow_schedule_date")
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
-               # Tvinga fram ny AI/PuLP-omräkning om datumet ändrats, om det var >12h sedan, eller om schemat saknas/är ogiltigt
                 today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
                 needs_ai_update = False
-                
                 if house_data.get("schedule_date") != today_str:
                     needs_ai_update = True
                 elif not daily_schedule or len(daily_schedule) != 96:
@@ -594,37 +586,20 @@ def main():
                     time.sleep(12)
                     
                     ai_result = get_ai_optimized_parameters(
-                        prices_today, temp_forecast, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"idag ({house_data.get('name')})"
+                        prices_today, temp_forecast, default_price_cap=price_cap, target_day_label=f"idag ({house_data.get('name')})"
                     )
                     
                     p_cap = ai_result["price_cap"]
-                    m_blocks = ai_result["min_on_blocks"]
                     preheat_hours = ai_result["preheat_hours"]
-                    cold_boost = ai_result["cold_boost"]
-                    comfort_priority = ai_result["comfort_priority"]
                     reasoning = ai_result["motivering"]
-
-                    # Comfort priority till max_off
-                    if comfort_priority == "high":
-                        effective_max_off = min(max_off, 4)
-                    elif comfort_priority == "medium":
-                        effective_max_off = min(max_off, 8)
-                    else:
-                        effective_max_off = max_off
-
-                    # Cold boost till min_on
-                    adjusted_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
 
                     daily_schedule = generate_daily_schedule(
                         prices_today, 
                         temp_hourly=temp_forecast,
-                        max_off_blocks=effective_max_off, 
-                        min_on_blocks=adjusted_min_on, 
                         current_temp=current_temp, 
                         price_cap=p_cap
                     )
 
-                    # Preheat-hours aktivering på billigaste slottarna
                     if preheat_hours > 0:
                         cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
                         extra_slots = preheat_hours * 4
@@ -633,22 +608,14 @@ def main():
                     
                     active_schedule_date = today_str
                     ref_device["price_cap"] = p_cap
-                    ref_device["min_on_blocks"] = m_blocks
                     
                     house_data["ai_latest_reasoning"] = reasoning
                     house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
-                    house_data["last_ai_parameters"] = {
-                        "price_cap": p_cap,
-                        "preheat_hours": preheat_hours,
-                        "cold_boost": cold_boost,
-                        "comfort_priority": comfort_priority
-                    }
                     config_updated = True
 
                 house_data["schedule_date"] = active_schedule_date
                 house_data["daily_schedule"] = daily_schedule
 
-                # Hämta morgondagens schema efter kl 14
                 try:
                     if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
                         tomorrow_dt = now + timedelta(days=1)
@@ -658,30 +625,16 @@ def main():
                         if len(set(prices_tomorrow)) > 1: 
                             time.sleep(12)
                             ai_result_tom = get_ai_optimized_parameters(
-                                prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, default_min_on_blocks=min_on, target_day_label=f"imorgon ({house_data.get('name')})"
+                                prices_tomorrow, temp_forecast_tom, default_price_cap=price_cap, target_day_label=f"imorgon ({house_data.get('name')})"
                             )
                             
                             p_cap_tom = ai_result_tom["price_cap"]
-                            m_blocks_tom = ai_result_tom["min_on_blocks"]
                             preheat_hours_tom = ai_result_tom["preheat_hours"]
-                            cold_boost_tom = ai_result_tom["cold_boost"]
-                            comfort_priority_tom = ai_result_tom["comfort_priority"]
                             reasoning_tom = ai_result_tom["motivering"]
-
-                            if comfort_priority_tom == "high":
-                                effective_max_off_tom = min(max_off, 4)
-                            elif comfort_priority_tom == "medium":
-                                effective_max_off_tom = min(max_off, 8)
-                            else:
-                                effective_max_off_tom = max_off
-
-                            adjusted_min_on_tom = m_blocks_tom + (cold_boost_tom * 4) if cold_boost_tom > 0 else m_blocks_tom
 
                             new_tomorrow_sched = generate_daily_schedule(
                                 prices_tomorrow, 
                                 temp_hourly=temp_forecast_tom,
-                                max_off_blocks=effective_max_off_tom, 
-                                min_on_blocks=adjusted_min_on_tom, 
                                 current_temp=current_temp, 
                                 price_cap=p_cap_tom
                             )
@@ -699,14 +652,11 @@ def main():
                 except Exception as e:
                     print(f"[ERROR] Misslyckades med morgondagens schema för {house_key}: {e}")
 
-                # --- LOOPA IGENOM HUSETS ENHETER ---
                 for dev in devices:
                     dev_id = dev.get("device_id")
                     dev_name = dev.get("name", "Enhet")
                     dev_type = dev.get("type", "switch")
                     dev_price_cap = dev.get("price_cap", price_cap)
-                    dev_max_off = dev.get("max_off_blocks", max_off)
-                    dev_min_on = dev.get("min_on_blocks", min_on)
                     cold_threshold = dev.get("cold_temp_threshold", 0)
                     min_mins_cold = dev.get("min_minutes_cold", 15)
                     override = dev.get("force_override", "AUTO")
@@ -715,12 +665,10 @@ def main():
                         continue
 
                     dev_schedule = daily_schedule
-                    if dev_max_off != max_off or dev_min_on != min_on or dev_price_cap != price_cap:
+                    if dev_price_cap != price_cap:
                         dev_schedule = generate_daily_schedule(
                             prices_today, 
                             temp_hourly=temp_forecast,
-                            max_off_blocks=dev_max_off, 
-                            min_on_blocks=dev_min_on, 
                             current_temp=current_temp, 
                             price_cap=dev_price_cap
                         )
@@ -753,8 +701,6 @@ def main():
                                     target_temp_val = t_high
                                     reason = f"[{dev_name}] Köldskydd aktivt -> HÖG temp ({t_high}°C)"
 
-                        print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Måltemp: {target_temp_val}°C | Orsak: {reason}")
-
                         set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
                         time.sleep(2)
 
@@ -786,7 +732,6 @@ def main():
                             should_be_on = False
                             reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
                         else:
-                            # Prioritera ALLTID PuLP-schemat först om det finns
                             if dev_schedule and len(dev_schedule) == 96:
                                 should_be_on = dev_schedule[quarter_index]
                                 reason = f"[{dev_name}] PuLP-schema: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
@@ -794,12 +739,10 @@ def main():
                                 should_be_on = (current_price <= dev_price_cap)
                                 reason = f"[{dev_name}] Reservregel (Inget schema): Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
-                            # Köldskydd som sista säkerhetsventil
                             if current_temp <= cold_threshold and min_mins_cold > 0:
                                 if now.minute < min_mins_cold:
                                     should_be_on = True
                                     reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
-                        print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
                         set_tuya_device(dev_id, should_be_on, device_type="switch")
                         time.sleep(2)
