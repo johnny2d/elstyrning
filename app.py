@@ -263,9 +263,12 @@ with tab_dash:
     if today_prices and len(today_prices) > 0:
         avg_day_price = sum(today_prices) / len(today_prices)
         
-        if current_house and "daily_schedule" in current_house:
+        if current_house and current_house.get("daily_schedule"):
             sched = current_house["daily_schedule"]
-            active_prices = [today_prices[i] for i in range(min(len(today_prices), len(sched))) if sched[i]]
+            if isinstance(sched, list) and len(sched) > 0:
+                active_prices = [today_prices[i] for i in range(min(len(today_prices), len(sched))) if sched[i]]
+            else:
+                active_prices = []
             if active_prices:
                 avg_active_price = sum(active_prices) / len(active_prices)
                 if avg_day_price > 0:
