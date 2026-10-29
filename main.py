@@ -796,18 +796,19 @@ def main():
                             should_be_on = False
                             reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
                         else:
+                            # Prioritera ALLTID PuLP-schemat först om det finns
                             if dev_schedule and len(dev_schedule) == 96:
                                 should_be_on = dev_schedule[quarter_index]
-                                reason = f"[{dev_name}] Optimeringstabell (PuLP): Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
+                                reason = f"[{dev_name}] PuLP-schema: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
                             else:
                                 should_be_on = (current_price <= dev_price_cap)
-                                reason = f"[{dev_name}] Reservregel: Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
+                                reason = f"[{dev_name}] Reservregel (Inget schema): Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
+                            # Köldskydd som sista säkerhetsventil
                             if current_temp <= cold_threshold and min_mins_cold > 0:
                                 if now.minute < min_mins_cold:
                                     should_be_on = True
                                     reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
-
                         print(f"[STYRLED] Hus: {house_data.get('name')} | Enhet: {dev_name} | Beslut: {'PÅ' if should_be_on else 'AV'} | Orsak: {reason}")
 
                         set_tuya_device(dev_id, should_be_on, device_type="switch")

@@ -179,6 +179,7 @@ with st.sidebar:
                         comfort_priority = ai_res["comfort_priority"]
                         reasoning = ai_res["motivering"]
 
+                        # Komfortprioritet sätter max tillåtna sammanhängande AV-block
                         if comfort_priority == "high":
                             eff_max_off = 4
                         elif comfort_priority == "medium":
@@ -188,7 +189,15 @@ with st.sidebar:
 
                         adj_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
 
-                        sched = generate_daily_schedule(prices, temp_hourly=forecast, max_off_blocks=eff_max_off, min_on_blocks=adj_min_on, current_temp=curr_temp, price_cap=p_cap)
+                        # Generera PuLP-schemat med rätt timprognos och maxtid för AV
+                        sched = generate_daily_schedule(
+                            prices, 
+                            temp_hourly=forecast, 
+                            max_off_blocks=eff_max_off, 
+                            min_on_blocks=adj_min_on, 
+                            current_temp=curr_temp, 
+                            price_cap=p_cap
+                        )
                         
                         if preheat_hours > 0:
                             cheapest_slots = sorted(range(len(prices)), key=lambda i: prices[i])
@@ -196,6 +205,7 @@ with st.sidebar:
                             for slot in cheapest_slots[:extra_slots]:
                                 sched[slot] = True
 
+                        # VIKTIGT: Sätt schedule_date så att både app.py och main.py är helt synkade
                         h_data.update({
                             "schedule_date": today_str, 
                             "daily_schedule": sched, 
