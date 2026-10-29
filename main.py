@@ -581,13 +581,15 @@ def main():
                 tomorrow_schedule_date = house_data.get("tomorrow_schedule_date")
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
-                # Kontrollera om AI behöver uppdateras (2 gånger per dygn / var 12:e timme)
+               # Tvinga fram ny AI/PuLP-omräkning om datumet ändrats, om det var >12h sedan, eller om schemat saknas/är ogiltigt
                 today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
                 needs_ai_update = False
                 
                 if house_data.get("schedule_date") != today_str:
+                    needs_ai_update = True
+                elif not daily_schedule or len(daily_schedule) != 96:
                     needs_ai_update = True
                 elif last_ai_update_str:
                     try:

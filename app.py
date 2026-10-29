@@ -160,6 +160,11 @@ with st.sidebar:
                     for h_key, h_data in houses.items():
                         if h_data.get("paused", False):
                             continue
+                        
+                        # 1. Nollställ det gamla schemat direkt så att inte gamla spöken ligger kvar
+                        h_data["daily_schedule"] = None
+                        h_data["schedule_date"] = ""
+                        
                         time.sleep(12)
                         h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
                         h_zone, h_station = h_data.get("zone", "SE2"), h_data.get("temperatur_nu_station")
@@ -179,7 +184,6 @@ with st.sidebar:
                         comfort_priority = ai_res["comfort_priority"]
                         reasoning = ai_res["motivering"]
 
-                        # Komfortprioritet sätter max tillåtna sammanhängande AV-block
                         if comfort_priority == "high":
                             eff_max_off = 4
                         elif comfort_priority == "medium":
@@ -189,7 +193,7 @@ with st.sidebar:
 
                         adj_min_on = m_blocks + (cold_boost * 4) if cold_boost > 0 else m_blocks
 
-                        # Generera PuLP-schemat med rätt timprognos och maxtid för AV
+                        # Generera det nya schemat med rätt timprognos
                         sched = generate_daily_schedule(
                             prices, 
                             temp_hourly=forecast, 
@@ -205,7 +209,7 @@ with st.sidebar:
                             for slot in cheapest_slots[:extra_slots]:
                                 sched[slot] = True
 
-                        # VIKTIGT: Sätt schedule_date så att både app.py och main.py är helt synkade
+                        # Uppdatera husets data med det nya schemat
                         h_data.update({
                             "schedule_date": today_str, 
                             "daily_schedule": sched, 
@@ -218,9 +222,11 @@ with st.sidebar:
                                 "comfort_priority": comfort_priority
                             }
                         })
+                    
+                    # Spara direkt till Gist och rensa Streamlit-cachen
                     save_config(config)
                     st.cache_data.clear()
-                    st.success("Klart!")
+                    st.success("Nytt PuLP-schema beräknat och sparat!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Fel: {e}")
