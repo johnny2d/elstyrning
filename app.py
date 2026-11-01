@@ -320,7 +320,7 @@ with tab_dash:
             secondary_y=True
         )
 
-        # 3. Statuspluppar: Två separata spår för att få både grön uppe och röd nere per kvart
+        # 3. Statuspluppar: Sätt plupp på ALLA tidssteg där tillståndet är aktivt (skapar hela block)
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -338,22 +338,22 @@ with tab_dash:
             else:
                 full_sched = list(schedule_today) + [schedule_today[-1]]
                 
-                # Gröna pluppar (endast där det är PÅ, annars None så de döljs)
+                # Gröna pluppar på ALLA kvartar som är PÅ (visar start, mitten och slut på perioden)
                 on_vals = [1.0 if s else None for s in full_sched]
-                # Röda pluppar (endast där det är AV, annars None så de döljs)
+                # Röda pluppar på ALLA kvartar som är AV (visar start, mitten och slut på perioden)
                 off_vals = [0.0 if not s else None for s in full_sched]
 
                 fig_dash.add_trace(
                     go.Scatter(
                         x=times_ext, y=on_vals, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=9, color="#2ecc71", symbol="circle")
+                        marker=dict(size=8, color="#2ecc71", symbol="circle")
                     ),
                     secondary_y=True
                 )
                 fig_dash.add_trace(
                     go.Scatter(
                         x=times_ext, y=off_vals, name="AV 🔴", mode="markers",
-                        marker=dict(size=9, color="#e74c3c", symbol="circle")
+                        marker=dict(size=8, color="#e74c3c", symbol="circle")
                     ),
                     secondary_y=True
                 )
@@ -536,7 +536,7 @@ with tab_sched:
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar: Två separata spår (gröna uppe, röda nere)
+            # Statuspluppar: Hela block för både PÅ och AV
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
@@ -551,14 +551,14 @@ with tab_sched:
                 fig_s.add_trace(
                     go.Scatter(
                         x=times_extended, y=on_vals_s, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=9, color="#2ecc71", symbol="circle")
+                        marker=dict(size=8, color="#2ecc71", symbol="circle")
                     ),
                     secondary_y=True
                 )
                 fig_s.add_trace(
                     go.Scatter(
                         x=times_extended, y=off_vals_s, name="AV 🔴", mode="markers",
-                        marker=dict(size=9, color="#e74c3c", symbol="circle")
+                        marker=dict(size=8, color="#e74c3c", symbol="circle")
                     ),
                     secondary_y=True
                 )
