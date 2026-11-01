@@ -232,6 +232,19 @@ else:
 
 # --- TAB 1: DASHBOARD ---
 with tab_dash:
+    # Kontrollera enheternas anslutningsstatus i förväg för att kunna visa varningar
+    offline_devices = []
+    if current_house:
+        for dev in current_house.get("devices", []):
+            if dev.get("device_id"):
+                tuya_conn, _, _ = get_tuya_device_status(dev.get("device_id"), device_type=dev.get("type", "switch"))
+                if not tuya_conn:
+                    offline_devices.append(dev.get("name"))
+
+    # Varningsbanner högst upp på dashboarden om någon enhet är offline
+    if offline_devices:
+        st.error(f"⚠️ **Varning:** Ingen kontakt med följande Tuya-enhet(er): **{', '.join(offline_devices)}**. Kontrollera nätverk eller strömförsörjning!")
+
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
     outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56)) if current_house else 0.0
@@ -258,39 +271,13 @@ with tab_dash:
                 if avg_day_price > 0:
                     active_saving_pct = max(0.0, ((avg_day_price - avg_active_price) / avg_day_price) * 100.0)
 
-    # 4 kolumner istället för 5 när 7-dagarsbesparing tagits bort
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Utetemperatur", f"{outside_temp:.1f} °C")
     c2.metric("Elpris snitt (idag)", f"{avg_day_price:.1f} öre/kWh")
     c3.metric("Planerat inköpspris", f"{avg_active_price:.1f} öre/kWh")
     c4.metric("Planerad besparing", f"{active_saving_pct:.1f} %")
 
-    st.divider()
-    st.markdown("### 🎛️ Husets Enheter")
-    
-    if current_house:
-        devs = current_house.get("devices", [])
-        if devs:
-            dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
-            for idx, dev in enumerate(devs):
-                with dev_cols[idx % 3]:
-                    with st.container(border=True):
-                        st.markdown(f"#### 🔌 {dev.get('name')}")
-                        is_term = dev.get("type") == "thermostat"
-                        st.caption(f"Typ: {'Termostat' if is_term else 'Relä / Switch'}")
-                        
-                        tuya_conn, tuya_msg, dev_temp = get_tuya_device_status(
-                            dev.get("device_id"), 
-                            device_type=dev.get("type", "switch")
-                        ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
-                        
-                        st.markdown(f"**Status:** `{tuya_msg}`")
-                        if dev_temp is not None:
-                            st.markdown(f"**Givartemp:** `{dev_temp:.1f} °C`")
-                        st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
-        else:
-            st.info("Inga enheter registrerade för detta hus ännu.")
-
+    # Grafen direkt högre upp
     st.divider()
     st.markdown("### 📈 Dagens Elpris, Utetemperatur & Driftstatus (Kvart för Kvart)")
     
@@ -359,6 +346,46 @@ with tab_dash:
 
         st.plotly_chart(fig_dash, use_container_width=True, key="chart_dashboard")
 
+    # Husets enheter med visuell röd ram/varning om anslutningen saknas
+    st.divider()
+    st.markdown("### 🎛️ Husets Enheter")
+    
+    if current_house:
+        devs = current_house.get("devices", [])
+        if devs:
+            dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
+            for idx, dev in enumerate(devs):
+                tuya_conn, tuya_msg, dev_temp = get_tuya_device_status(
+                    dev.get("device_id"), 
+                    device_type=dev.get("type", "switch")
+                ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
+
+                with dev_cols[idx % 3]:
+                    # Om anslutningen misslyckas, rendera med röd markering/varning
+                    if not tuya_conn:
+                        st.markdown(
+                            f"""
+                            <div style="border: 2px solid #ff4b4b; border-radius: 8px; padding: 15px; background-color: rgba(255, 75, 75, 0.05);">
+                                <h4>🔌 {dev.get('name')} <span style="color: #ff4b4b; font-size: 0.8em;">(OFFLINE ⚠️)</span></h4>
+                                <p style="margin: 0; color: #ff4b4b;"><b>Ingen kontakt med Tuya Cloud!</b></p>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                        st.markdown("<br>", unsafe_allow_html=True)
+                    else:
+                        with st.container(border=True):
+                            st.markdown(f"#### 🔌 {dev.get('name')}")
+                            is_term = dev.get("type") == "thermostat"
+                            st.caption(f"Typ: {'Termostat' if is_term else 'Relä / Switch'}")
+                            
+                            st.markdown(f"**Status:** `{tuya_msg}`")
+                            if dev_temp is not None:
+                                st.markdown(f"**Givartemp:** `{dev_temp:.1f} °C`")
+                            st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
+        else:
+            st.info("Inga enheter registrerade för detta hus ännu.")
+
     # Rådata & Logg
     st.divider()
     with st.expander("📊 Visa rådata / Historiklogg per kvart"):
@@ -391,14 +418,12 @@ with tab_settings:
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
         if st.button("💾 Spara enhetsinställningar", type="primary"):
-            # 1. Spara till konfigurationen
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
                 current_device.update({"force_override": force})
             save_config(config)
 
-            # 2. Skicka kommando OMEDELBART till Tuya Cloud beroende på val
             dev_id = current_device.get("device_id")
             if dev_id:
                 if is_thermostat:
@@ -406,7 +431,6 @@ with tab_settings:
                     set_tuya_device(dev_id, target_val, device_type="thermostat")
                 else:
                     switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
-                    # För AUTO låter vi main.py sköta nästa kvart, men om man tvingar av/på skickar vi direkt
                     if force != "AUTO":
                         set_tuya_device(dev_id, switch_val, device_type="switch")
 
