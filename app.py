@@ -320,7 +320,7 @@ with tab_dash:
             secondary_y=True
         )
 
-        # 3. Statuspluppar: Gröna HÖGST UPP (1.0), Röda LÄNGST NER (0.0)
+        # 3. Statuspluppar: Två separata spår för att få både grön uppe och röd nere per kvart
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -336,22 +336,28 @@ with tab_dash:
                     secondary_y=True
                 )
             else:
-                # 1.0 = Hela vägen upp, 0.0 = Hela vägen ner på axeln
-                vals_norm = [1.0 if s else 0.0 for s in schedule_today[:96]] + [1.0 if schedule_today[-1] else 0.0]
-                status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule_today[:96]] + ['#2ecc71' if schedule_today[-1] else '#e74c3c']
-                status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule_today[:96]] + ['PÅ 🟢' if schedule_today[-1] else 'AV 🔴']
+                full_sched = list(schedule_today) + [schedule_today[-1]]
                 
+                # Gröna pluppar (endast där det är PÅ, annars None så de döljs)
+                on_vals = [1.0 if s else None for s in full_sched]
+                # Röda pluppar (endast där det är AV, annars None så de döljs)
+                off_vals = [0.0 if not s else None for s in full_sched]
+
                 fig_dash.add_trace(
                     go.Scatter(
-                        x=times_ext, y=vals_norm, name="Status (PÅ/AV)", mode="lines+markers",
-                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=1),
-                        marker=dict(size=9, color=status_colors, symbol="circle"),
-                        customdata=status_labels,
-                        hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
+                        x=times_ext, y=on_vals, name="PÅ 🟢", mode="markers",
+                        marker=dict(size=9, color="#2ecc71", symbol="circle")
                     ),
                     secondary_y=True
                 )
-                # Lås fast höger y-axel mellan -0.05 och 1.05 så plupparna hamnar exakt i topp och botten
+                fig_dash.add_trace(
+                    go.Scatter(
+                        x=times_ext, y=off_vals, name="AV 🔴", mode="markers",
+                        marker=dict(size=9, color="#e74c3c", symbol="circle")
+                    ),
+                    secondary_y=True
+                )
+
                 fig_dash.update_yaxes(range=[-0.05, 1.05], secondary_y=True)
 
         fig_dash.update_layout(hovermode="x unified", height=420, margin=dict(l=10, r=10, t=30, b=10))
@@ -530,7 +536,7 @@ with tab_sched:
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar: Gröna överst (1.0), Röda nederst (0.0)
+            # Statuspluppar: Två separata spår (gröna uppe, röda nere)
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
@@ -538,18 +544,21 @@ with tab_sched:
                 vals_extended = vals + [vals[-1]]
                 fig_s.add_trace(go.Scatter(x=times_extended, y=vals_extended, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
             else:
-                vals_norm = [1.0 if s else 0.0 for s in schedule[:len(times)]] + [1.0 if schedule[-1] else 0.0]
-                status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]] + ['#2ecc71' if schedule[-1] else '#e74c3c']
-                status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule[:len(times)]] + ['PÅ 🟢' if schedule[-1] else 'AV 🔴']
-                
+                full_sched_s = list(schedule) + [schedule[-1]]
+                on_vals_s = [1.0 if s else None for s in full_sched_s]
+                off_vals_s = [0.0 if not s else None for s in full_sched_s]
+
                 fig_s.add_trace(
                     go.Scatter(
-                        x=times_extended, y=vals_norm,
-                        name="Status (PÅ/AV)", mode="lines+markers",
-                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=1),
-                        marker=dict(size=9, color=status_colors, symbol="circle"),
-                        customdata=status_labels,
-                        hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
+                        x=times_extended, y=on_vals_s, name="PÅ 🟢", mode="markers",
+                        marker=dict(size=9, color="#2ecc71", symbol="circle")
+                    ),
+                    secondary_y=True
+                )
+                fig_s.add_trace(
+                    go.Scatter(
+                        x=times_extended, y=off_vals_s, name="AV 🔴", mode="markers",
+                        marker=dict(size=9, color="#e74c3c", symbol="circle")
                     ),
                     secondary_y=True
                 )
