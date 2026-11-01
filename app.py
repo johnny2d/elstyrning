@@ -320,7 +320,7 @@ with tab_dash:
             secondary_y=True
         )
 
-        # 3. Statuspluppar: Block-logik med övergångspunkter
+        # 3. Statuspluppar och övergångslinjer
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -338,6 +338,8 @@ with tab_dash:
             else:
                 on_vals = [None] * len(times_ext)
                 off_vals = [None] * len(times_ext)
+                trans_x = []
+                trans_y = []
 
                 for i in range(len(times_ext)):
                     is_on_current = (i < 96 and schedule_today[i])
@@ -347,6 +349,19 @@ with tab_dash:
                         on_vals[i] = 1.0
                     if (i < 96 and not schedule_today[i]) or (i > 0 and not schedule_today[i-1]):
                         off_vals[i] = 0.0
+
+                    if i > 0 and (schedule_today[min(i, 95)] != schedule_today[min(i-1, 95)]):
+                        trans_x.extend([times_ext[i], times_ext[i], None])
+                        trans_y.extend([0.0, 1.0, None])
+
+                fig_dash.add_trace(
+                    go.Scatter(
+                        x=trans_x, y=trans_y, name="Övergång", mode="lines",
+                        line=dict(color="rgba(255, 75, 75, 0.5)", width=1.5, dash="dot"),
+                        hoverinfo="skip"
+                    ),
+                    secondary_y=True
+                )
 
                 fig_dash.add_trace(
                     go.Scatter(
@@ -541,7 +556,7 @@ with tab_sched:
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar: Block-logik med övergångspunkter
+            # Statuspluppar och övergångslinjer för Schema & Priser
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
@@ -551,6 +566,8 @@ with tab_sched:
             else:
                 on_vals_s = [None] * len(times_extended)
                 off_vals_s = [None] * len(times_extended)
+                trans_x_s = []
+                trans_y_s = []
 
                 for i in range(len(times_extended)):
                     is_on_current = (i < 96 and schedule[i])
@@ -560,6 +577,19 @@ with tab_sched:
                         on_vals_s[i] = 1.0
                     if (i < 96 and not schedule[i]) or (i > 0 and not schedule[i-1]):
                         off_vals_s[i] = 0.0
+
+                    if i > 0 and (schedule[min(i, 95)] != schedule[min(i-1, 95)]):
+                        trans_x_s.extend([times_extended[i], times_extended[i], None])
+                        trans_y_s.extend([0.0, 1.0, None])
+
+                fig_s.add_trace(
+                    go.Scatter(
+                        x=trans_x_s, y=trans_y_s, name="Övergång", mode="lines",
+                        line=dict(color="rgba(255, 75, 75, 0.5)", width=1.5, dash="dot"),
+                        hoverinfo="skip"
+                    ),
+                    secondary_y=True
+                )
 
                 fig_s.add_trace(
                     go.Scatter(
