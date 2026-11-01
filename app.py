@@ -298,7 +298,7 @@ with tab_dash:
 
         fig_dash = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Elpriskurva med TRAPPSTEGSFORM (shape="hv") så start och slut på varje kvart syns tydligt
+        # 1. Elpriskurva (Trappsteg)
         fig_dash.add_trace(
             go.Scatter(
                 x=times_ext, 
@@ -309,7 +309,7 @@ with tab_dash:
             secondary_y=False
         )
 
-        # 2. Utetemperaturkurva (Mjuk punktad orange linje)
+        # 2. Utetemperaturkurva
         fig_dash.add_trace(
             go.Scatter(
                 x=times_ext, 
@@ -320,7 +320,7 @@ with tab_dash:
             secondary_y=True
         )
 
-        # 3. Statuspluppar placerade HÖGST UPPI GRAFEN
+        # 3. Statuspluppar: Gröna HÖGST UPP (1.0), Röda LÄNGST NER (0.0)
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -336,25 +336,27 @@ with tab_dash:
                     secondary_y=True
                 )
             else:
-                # Skala statusvärden mellan t.ex. 0.85 och 0.98 så de hamnar högst upp på y-axeln
-                vals_norm = [0.95 if s else 0.85 for s in schedule_today[:96]] + [0.95 if schedule_today[-1] else 0.85]
+                # 1.0 = Hela vägen upp, 0.0 = Hela vägen ner på axeln
+                vals_norm = [1.0 if s else 0.0 for s in schedule_today[:96]] + [1.0 if schedule_today[-1] else 0.0]
                 status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule_today[:96]] + ['#2ecc71' if schedule_today[-1] else '#e74c3c']
                 status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule_today[:96]] + ['PÅ 🟢' if schedule_today[-1] else 'AV 🔴']
                 
                 fig_dash.add_trace(
                     go.Scatter(
                         x=times_ext, y=vals_norm, name="Status (PÅ/AV)", mode="lines+markers",
-                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=2),
+                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=1),
                         marker=dict(size=9, color=status_colors, symbol="circle"),
                         customdata=status_labels,
                         hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
                     ),
                     secondary_y=True
                 )
+                # Lås fast höger y-axel mellan -0.05 och 1.05 så plupparna hamnar exakt i topp och botten
+                fig_dash.update_yaxes(range=[-0.05, 1.05], secondary_y=True)
 
         fig_dash.update_layout(hovermode="x unified", height=420, margin=dict(l=10, r=10, t=30, b=10))
         fig_dash.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-        fig_dash.update_yaxes(title_text="Utetemperatur (°C)", secondary_y=True)
+        fig_dash.update_yaxes(title_text="Utetemperatur (°C) / Status", secondary_y=True)
 
         st.plotly_chart(fig_dash, use_container_width=True, key="chart_dashboard")
 
@@ -528,7 +530,7 @@ with tab_sched:
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar placerade högst upp
+            # Statuspluppar: Gröna överst (1.0), Röda nederst (0.0)
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
@@ -536,7 +538,7 @@ with tab_sched:
                 vals_extended = vals + [vals[-1]]
                 fig_s.add_trace(go.Scatter(x=times_extended, y=vals_extended, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
             else:
-                vals_norm = [0.95 if s else 0.85 for s in schedule[:len(times)]] + [0.95 if schedule[-1] else 0.85]
+                vals_norm = [1.0 if s else 0.0 for s in schedule[:len(times)]] + [1.0 if schedule[-1] else 0.0]
                 status_colors = ['#2ecc71' if s else '#e74c3c' for s in schedule[:len(times)]] + ['#2ecc71' if schedule[-1] else '#e74c3c']
                 status_labels = ['PÅ 🟢' if s else 'AV 🔴' for s in schedule[:len(times)]] + ['PÅ 🟢' if schedule[-1] else 'AV 🔴']
                 
@@ -544,17 +546,18 @@ with tab_sched:
                     go.Scatter(
                         x=times_extended, y=vals_norm,
                         name="Status (PÅ/AV)", mode="lines+markers",
-                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=2),
+                        line=dict(shape="hv", color="rgba(150, 150, 150, 0.2)", width=1),
                         marker=dict(size=9, color=status_colors, symbol="circle"),
                         customdata=status_labels,
                         hovertemplate="Tid: %{x}<br>Status: %{customdata}<extra></extra>"
                     ),
                     secondary_y=True
                 )
+                fig_s.update_yaxes(range=[-0.05, 1.05], secondary_y=True)
 
             fig_s.update_layout(hovermode="x unified", height=420, margin=dict(l=10, r=10, t=30, b=10))
             fig_s.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-            fig_s.update_yaxes(title_text="Utetemperatur (°C)", secondary_y=True)
+            fig_s.update_yaxes(title_text="Utetemperatur (°C) / Status", secondary_y=True)
 
             st.plotly_chart(fig_s, use_container_width=True, key="chart_schedule")
 
