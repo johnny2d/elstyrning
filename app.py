@@ -229,6 +229,113 @@ else:
     tab_dash, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
+# --- FUNKTION FÖR ATT RITA GRAF ---
+def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key):
+    # Vi använder make_subplots med en extra Y-axel (totalt 3 axlar: 1 vänster för pris, 2 höger: en för temp och en för status)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # 1. Elpriskurva (Vänster axel)
+    fig.add_trace(
+        go.Scatter(
+            x=times_ext, 
+            y=prices_ext, 
+            name="Elpris (öre/kWh)", 
+            line=dict(color="#29b6f6", width=2, shape="hv")
+        ),
+        secondary_y=False
+    )
+
+    # 2. Utetemperaturkurva (Höger axel 1 - yaxis2)
+    fig.add_trace(
+        go.Scatter(
+            x=times_ext, 
+            y=temp_ext, 
+            name="Utetemperatur (°C)", 
+            line=dict(color="#ffa726", width=2, dash="dot", shape="hv")
+        ),
+        secondary_y=True
+    )
+
+    # 3. Statuspluppar och övergångslinjer (använder overlay-axel så de ligger på 0 och 1 utan att störa temperaturen)
+    if current_device:
+        if is_thermostat:
+            t_high = float(current_device.get("target_temp_high", 10.0))
+            t_low = float(current_device.get("target_temp_low", 6.0))
+            vals = [t_high if s else t_low for s in schedule_data[:96]]
+            vals_ext = vals + [vals[-1]]
+            fig.add_trace(
+                go.Scatter(
+                    x=times_ext, y=vals_ext, name="Måltemp (°C)", 
+                    mode="lines+markers", line=dict(shape="hv", color="#2ecc71")
+                ),
+                secondary_y=True
+            )
+        else:
+            on_vals = [None] * len(times_ext)
+            off_vals = [None] * len(times_ext)
+            trans_x = []
+            trans_y = []
+
+            for i in range(len(times_ext)):
+                is_on_current = (i < 96 and schedule_data[i])
+                is_on_prev = (i > 0 and schedule_data[i-1])
+                
+                if is_on_current or is_on_prev:
+                    on_vals[i] = 1.0
+                if (i < 96 and not schedule_data[i]) or (i > 0 and not schedule_data[i-1]):
+                    off_vals[i] = 0.0
+
+                if i > 0 and (schedule_data[min(i, 95)] != schedule_data[min(i-1, 95)]):
+                    trans_x.extend([times_ext[i], times_ext[i], None])
+                    trans_y.extend([0.0, 1.0, None])
+
+            # Skapa ett separat y2-lager för statusplupparna via overlaying så att utetemperaturen får ha sin egen fria skala!
+            fig.add_trace(
+                go.Scatter(
+                    x=trans_x, y=trans_y, name="Övergång", mode="lines",
+                    line=dict(color="rgba(255, 75, 75, 0.5)", width=1.5, dash="dot"),
+                    hoverinfo="skip", yaxis="y3"
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=times_ext, y=on_vals, name="PÅ 🟢", mode="markers",
+                    marker=dict(size=9, color="#2ecc71", symbol="circle"), yaxis="y3"
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=times_ext, y=off_vals, name="AV 🔴", mode="markers",
+                    marker=dict(size=9, color="#e74c3c", symbol="circle"), yaxis="y3"
+                )
+            )
+
+    fig.update_layout(
+        hovermode="x unified", 
+        height=420, 
+        margin=dict(l=10, r=10, t=30, b=10),
+        # Konfigurera en tredje osynlig y-axel (y3) för plupparna mellan 0 och 1
+        yaxis3=dict(
+            title="",
+            overlaying="y2",
+            side="right",
+            range=[-0.05, 1.05],
+            showticklabels=False,
+            showgrid=false
+        )
+    )
+    
+    fig.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
+    # Avrunda högra y-axeln (temperatur) till närmaste hela grad
+    fig.update_yaxes(
+        title_text="Utetemperatur (°C)", 
+        secondary_y=True,
+        tickformat="d"  # 'd' sätter heltalsformatering
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
 # --- TAB 1: DASHBOARD ---
 with tab_dash:
     offline_devices = []
@@ -296,95 +403,8 @@ with tab_dash:
         prices_ext = list(today_prices) + [today_prices[-1]]
         temp_ext = list(temp_96_today) + [temp_96_today[-1]]
 
-        fig_dash = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # 1. Elpriskurva (Trappsteg)
-        fig_dash.add_trace(
-            go.Scatter(
-                x=times_ext, 
-                y=prices_ext, 
-                name="Elpris (öre/kWh)", 
-                line=dict(color="#29b6f6", width=2, shape="hv")
-            ),
-            secondary_y=False
-        )
-
-        # 2. Utetemperaturkurva
-        fig_dash.add_trace(
-            go.Scatter(
-                x=times_ext, 
-                y=temp_ext, 
-                name="Utetemperatur (°C)", 
-                line=dict(color="#ffa726", width=2, dash="dot", shape="hv")
-            ),
-            secondary_y=True
-        )
-
-        # 3. Statuspluppar och övergångslinjer
-        if current_device:
-            is_thermostat = current_device.get("type") == "thermostat"
-            if is_thermostat:
-                t_high = float(current_device.get("target_temp_high", 10.0))
-                t_low = float(current_device.get("target_temp_low", 6.0))
-                vals = [t_high if s else t_low for s in schedule_today[:96]]
-                vals_ext = vals + [vals[-1]]
-                fig_dash.add_trace(
-                    go.Scatter(
-                        x=times_ext, y=vals_ext, name="Måltemp (°C)", 
-                        mode="lines+markers", line=dict(shape="hv", color="#2ecc71")
-                    ),
-                    secondary_y=True
-                )
-            else:
-                on_vals = [None] * len(times_ext)
-                off_vals = [None] * len(times_ext)
-                trans_x = []
-                trans_y = []
-
-                for i in range(len(times_ext)):
-                    is_on_current = (i < 96 and schedule_today[i])
-                    is_on_prev = (i > 0 and schedule_today[i-1])
-                    
-                    if is_on_current or is_on_prev:
-                        on_vals[i] = 1.0
-                    if (i < 96 and not schedule_today[i]) or (i > 0 and not schedule_today[i-1]):
-                        off_vals[i] = 0.0
-
-                    if i > 0 and (schedule_today[min(i, 95)] != schedule_today[min(i-1, 95)]):
-                        trans_x.extend([times_ext[i], times_ext[i], None])
-                        trans_y.extend([0.0, 1.0, None])
-
-                fig_dash.add_trace(
-                    go.Scatter(
-                        x=trans_x, y=trans_y, name="Övergång", mode="lines",
-                        line=dict(color="rgba(255, 75, 75, 0.5)", width=1.5, dash="dot"),
-                        hoverinfo="skip"
-                    ),
-                    secondary_y=True
-                )
-
-                fig_dash.add_trace(
-                    go.Scatter(
-                        x=times_ext, y=on_vals, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=9, color="#2ecc71", symbol="circle")
-                    ),
-                    secondary_y=True
-                )
-                fig_dash.add_trace(
-                    go.Scatter(
-                        x=times_ext, y=off_vals, name="AV 🔴", mode="markers",
-                        marker=dict(size=9, color="#e74c3c", symbol="circle")
-                    ),
-                    secondary_y=True
-                )
-
-                fig_dash.update_yaxes(range=[-0.05, 1.05], secondary_y=True)
-
-        fig_dash.update_layout(hovermode="x unified", height=420, margin=dict(l=10, r=10, t=30, b=10))
-        fig_dash.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-        fig_dash.update_yaxes(title_text="Utetemperatur (°C) / Status", secondary_y=True)
-
-        st.plotly_chart(fig_dash, use_container_width=True, key="chart_dashboard")
+        is_therm = current_device.get("type") == "thermostat" if current_device else False
+        render_el_chart(times_ext, prices_ext, temp_ext, schedule_today, is_therm, current_device, "chart_dashboard")
 
     st.divider()
     st.markdown("### 🎛️ Husets Enheter")
@@ -545,73 +565,10 @@ with tab_sched:
 
             times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
             times_extended = times + ["24:00"]
-
-            fig_s = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            # Elpris trappsteg
             prices_extended = list(prices[:len(times)]) + [prices[len(times)-1] if len(prices) >= len(times) else 0]
-            fig_s.add_trace(go.Scatter(x=times_extended, y=prices_extended, name="Elpris (öre/kWh)", line=dict(color="#29b6f6", width=2, shape="hv")), secondary_y=False)
-
-            # Utetemperatur
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
-            fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar och övergångslinjer för Schema & Priser
-            if is_thermostat:
-                t_high = float(current_device.get("target_temp_high", 10.0))
-                t_low = float(current_device.get("target_temp_low", 6.0))
-                vals = [t_high if s else t_low for s in schedule[:len(times)]]
-                vals_extended = vals + [vals[-1]]
-                fig_s.add_trace(go.Scatter(x=times_extended, y=vals_extended, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
-            else:
-                on_vals_s = [None] * len(times_extended)
-                off_vals_s = [None] * len(times_extended)
-                trans_x_s = []
-                trans_y_s = []
-
-                for i in range(len(times_extended)):
-                    is_on_current = (i < 96 and schedule[i])
-                    is_on_prev = (i > 0 and schedule[i-1])
-                    
-                    if is_on_current or is_on_prev:
-                        on_vals_s[i] = 1.0
-                    if (i < 96 and not schedule[i]) or (i > 0 and not schedule[i-1]):
-                        off_vals_s[i] = 0.0
-
-                    if i > 0 and (schedule[min(i, 95)] != schedule[min(i-1, 95)]):
-                        trans_x_s.extend([times_extended[i], times_extended[i], None])
-                        trans_y_s.extend([0.0, 1.0, None])
-
-                fig_s.add_trace(
-                    go.Scatter(
-                        x=trans_x_s, y=trans_y_s, name="Övergång", mode="lines",
-                        line=dict(color="rgba(255, 75, 75, 0.5)", width=1.5, dash="dot"),
-                        hoverinfo="skip"
-                    ),
-                    secondary_y=True
-                )
-
-                fig_s.add_trace(
-                    go.Scatter(
-                        x=times_extended, y=on_vals_s, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=9, color="#2ecc71", symbol="circle")
-                    ),
-                    secondary_y=True
-                )
-                fig_s.add_trace(
-                    go.Scatter(
-                        x=times_extended, y=off_vals_s, name="AV 🔴", mode="markers",
-                        marker=dict(size=9, color="#e74c3c", symbol="circle")
-                    ),
-                    secondary_y=True
-                )
-                fig_s.update_yaxes(range=[-0.05, 1.05], secondary_y=True)
-
-            fig_s.update_layout(hovermode="x unified", height=420, margin=dict(l=10, r=10, t=30, b=10))
-            fig_s.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-            fig_s.update_yaxes(title_text="Utetemperatur (°C) / Status", secondary_y=True)
-
-            st.plotly_chart(fig_s, use_container_width=True, key="chart_schedule")
+            render_el_chart(times_extended, prices_extended, temp_extended, schedule, is_thermostat, current_device, "chart_schedule")
 
             sched_avg = sum(prices[:96]) / len(prices[:96]) if prices else 0.0
             active_p_sched = [prices[i] for i in range(min(len(prices), len(schedule))) if schedule[i]]
