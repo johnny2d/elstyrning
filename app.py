@@ -320,7 +320,7 @@ with tab_dash:
             secondary_y=True
         )
 
-        # 3. Statuspluppar: Sätt plupp på ALLA tidssteg där tillståndet är aktivt (skapar hela block)
+        # 3. Statuspluppar: Block-logik med övergångspunkter
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -336,24 +336,29 @@ with tab_dash:
                     secondary_y=True
                 )
             else:
-                full_sched = list(schedule_today) + [schedule_today[-1]]
-                
-                # Gröna pluppar på ALLA kvartar som är PÅ (visar start, mitten och slut på perioden)
-                on_vals = [1.0 if s else None for s in full_sched]
-                # Röda pluppar på ALLA kvartar som är AV (visar start, mitten och slut på perioden)
-                off_vals = [0.0 if not s else None for s in full_sched]
+                on_vals = [None] * len(times_ext)
+                off_vals = [None] * len(times_ext)
+
+                for i in range(len(times_ext)):
+                    is_on_current = (i < 96 and schedule_today[i])
+                    is_on_prev = (i > 0 and schedule_today[i-1])
+                    
+                    if is_on_current or is_on_prev:
+                        on_vals[i] = 1.0
+                    if (i < 96 and not schedule_today[i]) or (i > 0 and not schedule_today[i-1]):
+                        off_vals[i] = 0.0
 
                 fig_dash.add_trace(
                     go.Scatter(
                         x=times_ext, y=on_vals, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=8, color="#2ecc71", symbol="circle")
+                        marker=dict(size=9, color="#2ecc71", symbol="circle")
                     ),
                     secondary_y=True
                 )
                 fig_dash.add_trace(
                     go.Scatter(
                         x=times_ext, y=off_vals, name="AV 🔴", mode="markers",
-                        marker=dict(size=8, color="#e74c3c", symbol="circle")
+                        marker=dict(size=9, color="#e74c3c", symbol="circle")
                     ),
                     secondary_y=True
                 )
@@ -536,7 +541,7 @@ with tab_sched:
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot", shape="hv")), secondary_y=True)
 
-            # Statuspluppar: Hela block för både PÅ och AV
+            # Statuspluppar: Block-logik med övergångspunkter
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
@@ -544,21 +549,29 @@ with tab_sched:
                 vals_extended = vals + [vals[-1]]
                 fig_s.add_trace(go.Scatter(x=times_extended, y=vals_extended, name="Planerad Måltemp (°C)", mode="lines+markers", line=dict(shape="hv", color="#2ecc71")), secondary_y=True)
             else:
-                full_sched_s = list(schedule) + [schedule[-1]]
-                on_vals_s = [1.0 if s else None for s in full_sched_s]
-                off_vals_s = [0.0 if not s else None for s in full_sched_s]
+                on_vals_s = [None] * len(times_extended)
+                off_vals_s = [None] * len(times_extended)
+
+                for i in range(len(times_extended)):
+                    is_on_current = (i < 96 and schedule[i])
+                    is_on_prev = (i > 0 and schedule[i-1])
+                    
+                    if is_on_current or is_on_prev:
+                        on_vals_s[i] = 1.0
+                    if (i < 96 and not schedule[i]) or (i > 0 and not schedule[i-1]):
+                        off_vals_s[i] = 0.0
 
                 fig_s.add_trace(
                     go.Scatter(
                         x=times_extended, y=on_vals_s, name="PÅ 🟢", mode="markers",
-                        marker=dict(size=8, color="#2ecc71", symbol="circle")
+                        marker=dict(size=9, color="#2ecc71", symbol="circle")
                     ),
                     secondary_y=True
                 )
                 fig_s.add_trace(
                     go.Scatter(
                         x=times_extended, y=off_vals_s, name="AV 🔴", mode="markers",
-                        marker=dict(size=8, color="#e74c3c", symbol="circle")
+                        marker=dict(size=9, color="#e74c3c", symbol="circle")
                     ),
                     secondary_y=True
                 )
