@@ -378,7 +378,7 @@ with tab_dash:
         fig_dash.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
         fig_dash.update_yaxes(title_text="Temp (°C) / Status", secondary_y=True)
 
-        st.plotly_chart(fig_dash, use_container_width=True)
+        st.plotly_chart(fig_dash, use_container_width=True, key="chart_dashboard")
 
     # Rådata & Logg
     st.divider()
@@ -534,7 +534,7 @@ with tab_sched:
             fig_s.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
             fig_s.update_yaxes(title_text="Temp (°C) / Status", secondary_y=True)
 
-            st.plotly_chart(fig_s, use_container_width=True)
+            st.plotly_chart(fig_s, use_container_width=True, key="chart_schedule")
 
             sched_avg = sum(prices[:96]) / len(prices[:96]) if prices else 0.0
             active_p_sched = [prices[i] for i in range(min(len(prices), len(schedule))) if schedule[i]]
