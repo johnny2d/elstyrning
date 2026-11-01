@@ -24,6 +24,7 @@ if hasattr(st, "secrets"):
 
 from main import (
     get_tuya_device_status,
+    set_tuya_device,
     generate_daily_schedule, 
     get_nordpool_price, 
     get_outside_temp, 
@@ -257,30 +258,12 @@ with tab_dash:
                 if avg_day_price > 0:
                     active_saving_pct = max(0.0, ((avg_day_price - avg_active_price) / avg_day_price) * 100.0)
 
-    week_savings_kr = 0.0
-    if history and current_house:
-        df_h = pd.DataFrame(history)
-        if 'house' in df_h.columns and current_house.get('name') in df_h['house'].values:
-            df_h = df_h[df_h['house'] == current_house.get('name')]
-            if 'timestamp' in df_h.columns:
-                df_h['dt'] = pd.to_datetime(df_h['timestamp'])
-                week_ago = datetime.now() - timedelta(days=7)
-                df_week = df_h[df_h['dt'] >= week_ago]
-                if not df_week.empty and 'price' in df_week.columns:
-                    w_avg = df_week['price'].mean()
-                    active_mask = df_week['status'].astype(str).str.upper().isin(['ON', 'TRUE']) | (df_week['status'].astype(str).str.contains('°C'))
-                    active_p = df_week.loc[active_mask, 'price']
-                    if not active_p.empty:
-                        saved_ore = w_avg - active_p.mean()
-                        est_kwh = len(active_p) * 0.5 * 2.0
-                        week_savings_kr = max(0.0, (saved_ore * est_kwh) / 100.0)
-
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # 4 kolumner istället för 5 när 7-dagarsbesparing tagits bort
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Utetemperatur", f"{outside_temp:.1f} °C")
     c2.metric("Elpris snitt (idag)", f"{avg_day_price:.1f} öre/kWh")
     c3.metric("Planerat inköpspris", f"{avg_active_price:.1f} öre/kWh")
     c4.metric("Planerad besparing", f"{active_saving_pct:.1f} %")
-    c5.metric("Besparing (7 dgr)", f"{week_savings_kr:.2f} kr")
 
     st.divider()
     st.markdown("### 🎛️ Husets Enheter")
@@ -319,7 +302,6 @@ with tab_dash:
             target_date=now
         )
         
-        # Trappa ut temperatur per kvart (24 timmar -> 96 kvartar)
         temp_96_today = []
         for t_val in temp_forecast_today:
             temp_96_today.extend([t_val] * 4)
@@ -333,19 +315,16 @@ with tab_dash:
 
         fig_dash = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # 1. Elpriskurva (Vänster axel)
         fig_dash.add_trace(
             go.Scatter(x=times_ext, y=prices_ext, name="Elpris (öre/kWh)", line=dict(color="#29b6f6", width=2)),
             secondary_y=False
         )
 
-        # 2. Utetemperaturkurva (Höger axel)
         fig_dash.add_trace(
             go.Scatter(x=times_ext, y=temp_ext, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot")),
             secondary_y=True
         )
 
-        # 3. Driftstatus (Höger axel som punkter/trappa)
         if current_device:
             is_thermostat = current_device.get("type") == "thermostat"
             if is_thermostat:
@@ -412,12 +391,28 @@ with tab_settings:
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
         if st.button("💾 Spara enhetsinställningar", type="primary"):
+            # 1. Spara till konfigurationen
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
                 current_device.update({"force_override": force})
             save_config(config)
+
+            # 2. Skicka kommando OMEDELBART till Tuya Cloud beroende på val
+            dev_id = current_device.get("device_id")
+            if dev_id:
+                if is_thermostat:
+                    target_val = t_high if force == "PÅ (Tvinga igång)" else (t_low if force == "AV (Stäng av allt)" else t_low)
+                    set_tuya_device(dev_id, target_val, device_type="thermostat")
+                else:
+                    switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
+                    # För AUTO låter vi main.py sköta nästa kvart, men om man tvingar av/på skickar vi direkt
+                    if force != "AUTO":
+                        set_tuya_device(dev_id, switch_val, device_type="switch")
+
             st.cache_data.clear()
+            st.success("Inställningarna sparades och skickades till enheten!")
+            time.sleep(1)
             st.rerun()
 
     st.divider()
@@ -469,7 +464,6 @@ with tab_sched:
         else:
             temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
             
-            # Trappa ut temperatur per kvart (24 timmar -> 96 kvartar)
             temp_96 = []
             for t_val in temp_forecast:
                 temp_96.extend([t_val] * 4)
@@ -493,15 +487,12 @@ with tab_sched:
 
             fig_s = make_subplots(specs=[[{"secondary_y": True}]])
             
-            # 1. Elpris (Vänster axel)
             prices_extended = list(prices[:len(times)]) + [prices[len(times)-1] if len(prices) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=prices_extended, name="Elpris (öre/kWh)", line=dict(color="#29b6f6", width=2)), secondary_y=False)
 
-            # 2. Utetemperatur (Höger axel)
             temp_extended = list(temp_96[:len(times)]) + [temp_96[len(times)-1] if len(temp_96) >= len(times) else 0]
             fig_s.add_trace(go.Scatter(x=times_extended, y=temp_extended, name="Utetemperatur (°C)", line=dict(color="#ffa726", width=2, dash="dot")), secondary_y=True)
 
-            # 3. Status eller Måltemp (Höger axel)
             if is_thermostat:
                 t_high = float(current_device.get("target_temp_high", 10.0))
                 t_low = float(current_device.get("target_temp_low", 6.0))
