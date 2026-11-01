@@ -321,7 +321,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
             side="right",
             range=[-0.05, 1.05],
             showticklabels=False,
-            showgrid=false
+            showgrid=False
         )
     )
     
