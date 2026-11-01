@@ -231,10 +231,9 @@ else:
 
 # --- FUNKTION FÖR ATT RITA GRAF ---
 def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key):
-    # Vi använder make_subplots med en extra Y-axel (totalt 3 axlar: 1 vänster för pris, 2 höger: en för temp och en för status)
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     
-    # 1. Elpriskurva (Vänster axel)
+    # 1. Elpriskurva (Vänster axel - yaxis1)
     fig.add_trace(
         go.Scatter(
             x=times_ext, 
@@ -245,7 +244,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         secondary_y=False
     )
 
-    # 2. Utetemperaturkurva (Höger axel 1 - yaxis2)
+    # 2. Utetemperaturkurva (Höger axel - yaxis2)
     fig.add_trace(
         go.Scatter(
             x=times_ext, 
@@ -256,7 +255,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         secondary_y=True
     )
 
-    # 3. Statuspluppar och övergångslinjer (använder overlay-axel så de ligger på 0 och 1 utan att störa temperaturen)
+    # 3. Statuspluppar och övergångslinjer (placeras på en egen overlay-axel: yaxis3)
     if current_device:
         if is_thermostat:
             t_high = float(current_device.get("target_temp_high", 10.0))
@@ -289,7 +288,6 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                     trans_x.extend([times_ext[i], times_ext[i], None])
                     trans_y.extend([0.0, 1.0, None])
 
-            # Skapa ett separat y2-lager för statusplupparna via overlaying så att utetemperaturen får ha sin egen fria skala!
             fig.add_trace(
                 go.Scatter(
                     x=trans_x, y=trans_y, name="Övergång", mode="lines",
@@ -314,10 +312,20 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         hovermode="x unified", 
         height=420, 
         margin=dict(l=10, r=10, t=30, b=10),
-        # Konfigurera en tredje osynlig y-axel (y3) för plupparna mellan 0 och 1
+        # Låt y2 hantera temperaturen med fri skala och heltal
+        yaxis2=dict(
+            title="Utetemperatur (°C)",
+            anchor="x",
+            overlaying="y",
+            side="right",
+            tickformat="d",
+            showgrid=False
+        ),
+        # Låt y3 hantera statusplupparna på intervallet 0 till 1 osynligt
         yaxis3=dict(
             title="",
-            overlaying="y2",
+            anchor="x",
+            overlaying="y",
             side="right",
             range=[-0.05, 1.05],
             showticklabels=False,
@@ -326,15 +334,8 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
     )
     
     fig.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-    # Avrunda högra y-axeln (temperatur) till närmaste hela grad
-    fig.update_yaxes(
-        title_text="Utetemperatur (°C)", 
-        secondary_y=True,
-        tickformat="d"  # 'd' sätter heltalsformatering
-    )
 
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
-
 
 # --- TAB 1: DASHBOARD ---
 with tab_dash:
