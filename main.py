@@ -289,7 +289,8 @@ Identifiera:
 6. Om en kall period följer efter en billig period
 7. Om en dyr period sammanfaller med stark kyla
 8. Om prisprofilen är jämn eller mycket volatil
-
+9. Dela upp dygnet i tre delar: morgon, dag, kväll/natt och analysera prisprofilen för varje del för att undvika perioder med långvarig avstängning.
+10. Identifiera om det finns risk för att huset kyls ut under dygnets dyraste perioder.
 ==================================================
 VIKTIGA PRINCIPER
 ==================================================
