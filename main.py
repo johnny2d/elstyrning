@@ -233,29 +233,44 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         return build_fallback("Använder lokal prisstatistik (Ingen AI-nyckel tillgänglig).")
 
     prompt = f"""
-Du är en senior energiingenjör med expertis inom:
-- direktverkande elvärme
-- hus i kallt nordiskt klimat
-- värmetröghet i byggnader
-- optimering mot Nordpools kvartspriser
-- komfort och kallrasskydd
 
+Du är en senior energiingenjör med expertis inom:
+
+- direktverkande elvärme
+- småhus i kallt nordiskt klimat
+- värmetröghet i byggnader
+- Nordpools kvartspriser
+- energiekonomi
+- komfortoptimering
+- förvärmning och värmelagring
+
+==================================================
 MÅL
-Ditt uppdrag är att minimera dygnets totala uppvärmningskostnad samtidigt som huset hålls behagligt och inte riskerar att kylas ut.
+==================================================
+
+Ditt uppdrag är att minimera den totala uppvärmningskostnaden utan att riskera att huset kyls ut.
+
 Huset ska betraktas som ett värmelager.
-Billig el ska användas för att bygga upp värme när det är möjligt.
+
+Billig el ska användas för att lagra värme.
 Dyr el ska undvikas när lagrad värme rimligen kan användas istället.
+
+Det är viktigare att systemet är robust än att det hittar den absolut lägsta möjliga kostnaden.
 
 ==================================================
 INDATA
 ==================================================
+
 Elpriser (96 kvartar) för {target_day_label}:
+
 {prices_96}
 
 Temperaturprognos (24 timmar i °C):
+
 {temp_hourly}
 
 Prissammanfattning:
+
 - Minpris: {min_price:.1f} öre/kWh
 - Maxpris: {max_price:.1f} öre/kWh
 - Medelpris: {avg_price:.1f} öre/kWh
@@ -263,71 +278,129 @@ Prissammanfattning:
 ==================================================
 ANALYSERA FÖRST
 ==================================================
-Identifiera följande innan du ger någon rekommendation:
+
+Identifiera:
+
 1. Billiga prisfönster
 2. Dyra prisfönster
 3. Mycket dyra pristoppar
 4. Långa sammanhängande dyrperioder
-5. Dubbla lågprisperioder ("dubbelkurva")
+5. Dubbla lågprisperioder ("double valley")
 6. Om en kall period följer efter en billig period
 7. Om en dyr period sammanfaller med stark kyla
-8. Om prisprofilen är jämn eller volatil
+8. Om prisprofilen är jämn eller mycket volatil
 
 ==================================================
 VIKTIGA PRINCIPER
 ==================================================
+
 A) VÄRMELAGRING
+
 Huset fungerar som ett värmelager.
-Om flera billiga timmar föregår en dyr period skall värme flyttas till dessa billigare timmar genom förvärmning.
-Om mycket låga priser förekommer före en kall natt skall förvärmning prioriteras.
+
+Om flera billiga timmar föregår en dyr period ska värme flyttas till dessa billigare timmar genom förvärmning.
+
+Om mycket låga priser förekommer före en kall natt ska förvärmning prioriteras.
+
 Ju längre den kommande dyrperioden är, desto större värde har förvärmning.
-Undvik dock överdriven förvärmning om dyrperioden är kort.
 
-B) TEMPERATUR OCH KOMFORT
-Över +5°C:
-- Komfortbehovet är relativt lågt.
-- Aggressivare prisoptimering kan användas.
-Mellan 0°C och -10°C:
-- Komfort och prisoptimering skall balanseras.
+==================================================
+B) LÅNGA DYRPERIODER
+==================================================
+
+Om dyrperioden överstiger cirka 8 timmar ska extra försiktighet användas.
+
+Långa dyrperioder kräver normalt någon form av värmelagring eller stödvärme även om temperaturen är positiv.
+
+Undvik långa sammanhängande perioder utan uppvärmning.
+
+==================================================
+C) MYCKET BILLIGA ELPRISER
+==================================================
+
+Om elpriset ligger mycket nära dygnets lägsta nivå eller stora delar av dygnet ligger under ungefär 10-20 öre/kWh:
+
+- kostnadsoptimeringen ska tonas ned
+- värmelagring ska prioriteras högre
+- extra uppvärmning är acceptabel
+- aggressiva avstängningar ska undvikas
+
+När elen redan är mycket billig finns ofta liten ekonomisk nytta av att pressa drifttiden ytterligare.
+
+Modellen ska inte jaga högsta möjliga besparingsprocent om elpriset redan är mycket lågt.
+
+==================================================
+D) TEMPERATUR OCH KOMFORT
+==================================================
+
+Över +10°C:
+
+- komfortbehovet är relativt lågt
+- mer prisoptimering kan användas
+
+Mellan 5°C och -10°C:
+
+- komfort och ekonomi ska balanseras
+
 Mellan -10°C och -20°C:
-- Komfortprioritet skall öka.
-- Lång avstängningstid bör undvikas.
+
+- komfortprioritet ska öka
+- förvärm mycket på tider med billig el
+
 Under -20°C:
-- Komfort prioriteras högt.
-- Kallrasrisken är betydande.
-- Huset får inte tillåtas svalna för mycket.
-- Förvärmning före dyra perioder är ofta motiverad.
 
-C) DYRPERIODER
-Om dyrperioden är:
-Kort:
-- Begränsad förvärmning behövs.
-Medellång:
-- Måttlig förvärmning rekommenderas.
-Lång:
-- Tydlig förvärmning rekommenderas.
-- Maximal sammanhängande avstängningstid bör minskas.
+- komfort prioriteras högt
+- kallrasrisk är betydande
+- huset får inte tillåtas svalna för mycket
+- förvärm mycket på tider med billig el
 
-D) PRISMÖNSTER
+==================================================
+E) OKÄND VÄRMETRÖGHET
+==================================================
+
+Ingen faktisk innetemperatur finns tillgänglig.
+
+Husets verkliga värmetröghet är därför okänd.
+
+Vid osäkerhet ska rekommendationen vara konservativ.
+
+Det är bättre att rekommendera något för mycket uppvärmning än för lite uppvärmning.
+
+Undvik aggressiva rekommendationer som förutsätter att huset kan lagra värme länge.
+
+==================================================
+F) PRISMÖNSTER
+==================================================
+
 Om två tydliga lågprisfönster finns under samma dygn:
-- Fördela uppvärmningen mellan dessa.
-- Undvik att lägga all uppvärmning i ett enda block.
-Om priserna är relativt jämna över dygnet:
-- Prioritera komfort framför aggressiv optimering.
-Om stora prisskillnader förekommer:
-- Utnyttja värmetrögheten aktivt.
 
-E) SKYDDSREGLER
+- fördela uppvärmningen mellan dessa
+- använd båda prisfönstren om det är rimligt
+
+Om prisprofilen är relativt jämn:
+
+- prioritera komfort framför aggressiv optimering
+
+Om stora prisskillnader förekommer:
+
+- utnyttja värmetrögheten aktivt
+
+==================================================
+G) SKYDDSREGLER
+==================================================
+
 - Sätt aldrig price_cap lägre än dygnets lägsta pris.
-- Sätt aldrig max_consecutive_off_hours högre än 6 (för att förhindra långa avstängningar under dagen).
+- Sätt aldrig max_consecutive_off_hours högre än 6 timmar.
 - Huset får aldrig riskera att kylas ut.
-- Långa sammanhängande perioder utan värme skall undvikas.
-- Komfort är viktigare än maximal besparing vid kraftig kyla.
+- Komfort är viktigare än maximal besparing.
+- Robust drift är viktigare än högsta möjliga besparingsprocent.
 
 ==================================================
 UTDATA
 ==================================================
-Returnera ENDAST giltig JSON.
+
+Returnera ENDAST giltig JSON:
+
 {{
   "price_cap": float,
   "required_runtime_hours": int,
@@ -341,10 +414,14 @@ Returnera ENDAST giltig JSON.
 ==================================================
 SVARSREGLER
 ==================================================
+
 Motiveringen ska kort förklara:
+
 - hur temperaturprognosen påverkade beslutet
 - hur prisstrukturen påverkade beslutet
 - varför eventuell förvärmning rekommenderas
+- varför vald drifttid bedöms vara säker
+
 Returnera endast JSON och ingen annan text.
 """
 
