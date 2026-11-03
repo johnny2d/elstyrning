@@ -319,16 +319,16 @@ Undvik långa sammanhängande perioder utan uppvärmning.
 C) MYCKET BILLIGA ELPRISER
 ==================================================
 
-Om elpriset ligger mycket nära dygnets lägsta nivå eller stora delar av dygnet ligger under ungefär 10-20 öre/kWh:
+Om elpriset ligger nära dygnets lägre tredjedel eller stora delar av dygnet ligger under ungefär 10-30 öre/kWh:
 
 - kostnadsoptimeringen ska tonas ned
-- värmelagring ska prioriteras högre
+- värmelagring ska prioriteras högt
 - extra uppvärmning är acceptabel
 - aggressiva avstängningar ska undvikas
 
 När elen redan är mycket billig finns ofta liten ekonomisk nytta av att pressa drifttiden ytterligare.
 
-Modellen ska inte jaga högsta möjliga besparingsprocent om elpriset redan är mycket lågt.
+Modellen ska inte jaga högsta möjliga besparingsprocent om elpriset redan är mycket lågt utan prioritera komfort och robust drift.
 
 ==================================================
 D) TEMPERATUR OCH KOMFORT
@@ -395,6 +395,15 @@ G) SKYDDSREGLER
 - Huset får aldrig riskera att kylas ut.
 - Komfort är viktigare än maximal besparing.
 - Robust drift är viktigare än högsta möjliga besparingsprocent.
+==============================
+EKONOMISK REALISM
+==============================
+Modellen ska ta hänsyn till den faktiska ekonomiska nyttan.
+
+Om elpriset redan är mycket lågt över stora delar av dygnet
+ska små ytterligare besparingar inte prioriteras framför robust uppvärmning.
+
+Skillnaden mellan 3 och 5 öre/kWh är ofta ekonomiskt obetydlig jämfört med risken att värma för lite.
 
 ==================================================
 UTDATA
