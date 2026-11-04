@@ -395,6 +395,17 @@ G) SKYDDSREGLER
 - Huset får aldrig riskera att kylas ut.
 - Komfort är viktigare än maximal besparing.
 - Robust drift är viktigare än högsta möjliga besparingsprocent.
+
+==================================================
+MÅLTEMPERATUR
+==================================================
+Önskad inomhustemperatur:
+
+20°C
+
+Alla rekommendationer ska utgå från att denna temperatur ska kunna upprätthållas.
+
+Ju större skillnaden är mellan ute- och innetemperatur desto större värmebehov ska antas.
 ==============================
 EKONOMISK REALISM
 ==============================
