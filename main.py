@@ -209,6 +209,7 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 5.0
 
 # --- AI STRATEGEN (GEMINI) ---
+import random
 def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, target_day_label="idag"):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
@@ -446,17 +447,34 @@ Motiveringen ska kort förklara:
 Returnera endast JSON och ingen annan text.
 """
 
-    try:
-        if GEMINI_AVAILABLE == "genai_new":
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-            raw_text = response.text
-        elif GEMINI_AVAILABLE == "genai_old":
-            genai_old.configure(api_key=GEMINI_API_KEY)
-            model = genai_old.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            raw_text = response.text
+    max_retries = 3
+    delay = 5.0
+    raw_text = None
 
+    for attempt in range(max_retries):
+        try:
+            if GEMINI_AVAILABLE == "genai_new":
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                raw_text = response.text
+                break
+            elif GEMINI_AVAILABLE == "genai_old":
+                genai_old.configure(api_key=GEMINI_API_KEY)
+                model = genai_old.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt)
+                raw_text = response.text
+                break
+        except Exception as e:
+            err_str = str(e)
+            if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_retries - 1:
+                sleep_time = delay + random.uniform(1.0, 3.0)
+                print(f"[WARNING] Google API överbelastat (Försök {attempt+1}/{max_retries}). Väntar {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
+                delay *= 2
+            else:
+                raise e  # Om det är ett annat fel eller sista försöket, kasta vidare till except längre ner
+
+    try:
         clean_json = raw_text.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
         
@@ -497,6 +515,8 @@ Returnera endast JSON och ingen annan text.
             mot_text = f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}). Använder lokal beräkning."
 
         return build_fallback(mot_text)
+    
+    
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
@@ -748,39 +768,53 @@ def main():
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
-                    time.sleep(12)
                     
-                    ai_result = get_ai_optimized_parameters(
-                        prices_today, temp_forecast, default_price_cap=price_cap, target_day_label=f"idag ({house_data.get('name')})"
-                    )
-                    
-                    p_cap = ai_result["price_cap"]
-                    req_runtime = ai_result["required_runtime_hours"]
-                    max_off_h = ai_result["max_consecutive_off_hours"]
-                    preheat_hours = ai_result["preheat_hours"]
-                    reasoning = ai_result["motivering"]
+                    try:
+                        time.sleep(12)
+                        ai_result = get_ai_optimized_parameters(
+                            prices_today, temp_forecast, default_price_cap=price_cap, target_day_label=f"idag ({house_data.get('name')})"
+                        )
+                        
+                        p_cap = ai_result["price_cap"]
+                        req_runtime = ai_result["required_runtime_hours"]
+                        max_off_h = ai_result["max_consecutive_off_hours"]
+                        preheat_hours = ai_result["preheat_hours"]
+                        reasoning = ai_result["motivering"]
 
-                    daily_schedule = generate_daily_schedule(
-                        prices_today, 
-                        temp_hourly=temp_forecast,
-                        current_temp=current_temp, 
-                        price_cap=p_cap,
-                        required_runtime_hours=req_runtime,
-                        max_consecutive_off_hours=max_off_h
-                    )
+                        new_schedule = generate_daily_schedule(
+                            prices_today, 
+                            temp_hourly=temp_forecast,
+                            current_temp=current_temp, 
+                            price_cap=p_cap,
+                            required_runtime_hours=req_runtime,
+                            max_consecutive_off_hours=max_off_h
+                        )
 
-                    if preheat_hours > 0:
-                        cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
-                        extra_slots = preheat_hours * 4
-                        for slot in cheapest_slots[:extra_slots]:
-                            daily_schedule[slot] = True
-                    
-                    active_schedule_date = today_str
-                    ref_device["price_cap"] = p_cap
-                    
-                    house_data["ai_latest_reasoning"] = reasoning
-                    house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
-                    config_updated = True
+                        if preheat_hours > 0:
+                            cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
+                            extra_slots = preheat_hours * 4
+                            for slot in cheapest_slots[:extra_slots]:
+                                new_schedule[slot] = True
+                        
+                        # Om allt gick bra uppdaterar vi schemat
+                        daily_schedule = new_schedule
+                        active_schedule_date = today_str
+                        ref_device["price_cap"] = p_cap
+                        
+                        house_data["ai_latest_reasoning"] = reasoning
+                        house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                        config_updated = True
+
+                    except Exception as ai_err:
+                        print(f"[AI UPDATE ERROR] AI-omräkning misslyckades: {ai_err}. Behåller föregående plan.")
+                        
+                        # Om det inte finns något schema alls sedan tidigare (t.ex. vid nyuppstart), 
+                        # sätter vi ett säkert standardblock, annars rör vi ingenting!
+                        if not daily_schedule or len(daily_schedule) != 96:
+                            daily_schedule = [True if (i // 4) in [2, 3, 4, 5, 12, 13, 18, 19] else False for i in range(96)]
+                        
+                        house_data["ai_latest_reasoning"] = f"⚠️ AI-anrop misslyckades ({str(ai_err)[:35]}). Behåller föregående plan."
+                        config_updated = True
 
                 house_data["schedule_date"] = active_schedule_date
                 house_data["daily_schedule"] = daily_schedule
