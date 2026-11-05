@@ -222,8 +222,8 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, default_price_cap=50.0, 
         fallback_price_cap = max(min_price, local_smart_price_cap)
         return {
             "price_cap": fallback_price_cap,
-            "required_runtime_hours": 6,
-            "max_consecutive_off_hours": 6,
+            "required_runtime_hours": 10,
+            "max_consecutive_off_hours": 3,
             "preheat_hours": 0,
             "comfort_priority": "medium",
             "price_pattern": "volatile",
@@ -388,8 +388,8 @@ Returnera endast JSON och ingen annan text.
         price_pattern = str(data.get("price_pattern", "volatile"))
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
-        if max_consecutive_off_hours > 6:
-            max_consecutive_off_hours = 6
+        if max_consecutive_off_hours > 4:
+            max_consecutive_off_hours = 4
 
         if prices_96 and price_cap < min_price:
             price_cap = min_price + 5.0
