@@ -255,29 +255,36 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         secondary_y=True
     )
 
-    # 3. Faktisk Rumstemperatur från historik (om det finns giltiga mätvärden)
+  # 3. Faktisk Rumstemperatur från historik (mappad mot de 96 kvartarna)
     if history_df is not None and not history_df.empty:
         temp_col = 'room_temp' if 'room_temp' in history_df.columns else ('device_temp' if 'device_temp' in history_df.columns else None)
         if temp_col:
-            hist_times = []
-            hist_temps = []
+            room_temps_96 = [None] * 96
             for _, row in history_df.iterrows():
                 val = row[temp_col]
                 if pd.notnull(val) and val is not None:
                     try:
-                        t_str = row['timestamp'].split()[1] # Tar 'HH:MM'
-                        hist_times.append(t_str)
-                        hist_temps.append(float(val))
+                        # Extrahera timme och minut från 'YYYY-MM-DD HH:MM'
+                        time_part = row['timestamp'].split()[1]
+                        h, m = map(int, time_part.split(':'))
+                        q_idx = (h * 4) + (m // 15)
+                        if 0 <= q_idx < 96:
+                            room_temps_96[q_idx] = float(val)
                     except Exception:
                         pass
-            if hist_temps:
+            
+            # Förläng med 1 element för att matcha times_ext (som har 97 punkter till 24:00)
+            room_temps_ext = room_temps_96 + [room_temps_96[-1] if room_temps_96[-1] is not None else None]
+            
+            if any(v is not None for v in room_temps_ext):
                 fig.add_trace(
                     go.Scatter(
-                        x=hist_times,
-                        y=hist_temps,
+                        x=times_ext,
+                        y=room_temps_ext,
                         name="Faktisk Rumstemp (°C)",
                         mode="lines+markers",
-                        line=dict(color="#ab47bc", width=2)
+                        line=dict(color="#ab47bc", width=2),
+                        connectgaps=True
                     ),
                     secondary_y=True
                 )
