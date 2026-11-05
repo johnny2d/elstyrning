@@ -748,29 +748,46 @@ def main():
                 tomorrow_schedule_date = house_data.get("tomorrow_schedule_date")
                 tomorrow_schedule = house_data.get("tomorrow_schedule")
 
+                # --- KOLLA OM AI-UPPDATERING BEHÖVS ---
                 today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
                 needs_ai_update = False
-                if house_data.get("schedule_date") != today_str:
-                    needs_ai_update = True
-                elif not daily_schedule or len(daily_schedule) != 96:
-                    needs_ai_update = True
-                elif last_ai_update_str:
+                last_attempt_str = house_data.get("last_ai_attempt")
+                
+                # Cooldown-kontroll: Har vi gjort ett misslyckat försök under de senaste 3 timmarna?
+                in_cooldown = False
+                if last_attempt_str:
                     try:
-                        last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
-                        if now.hour >= 12 and last_update_dt < today_noon and last_update_dt >= today_midnight:
-                            needs_ai_update = True
+                        last_attempt_dt = datetime.strptime(last_attempt_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
+                        if (now - last_attempt_dt).total_seconds() < 3 * 3600:  # 3 timmar
+                            in_cooldown = True
                     except Exception:
+                        pass
+
+                # Standardregler för när AI ska uppdateras (om vi inte är i cooldown-läge)
+                if not in_cooldown:
+                    if house_data.get("schedule_date") != today_str:
                         needs_ai_update = True
-                else:
-                    needs_ai_update = True
+                    elif not daily_schedule or len(daily_schedule) != 96:
+                        needs_ai_update = True
+                    elif last_ai_update_str:
+                        try:
+                            last_update_dt = datetime.strptime(last_ai_update_str, "%Y-%m-%d %H:%M").replace(tzinfo=sweden_tz)
+                            if now.hour >= 12 and last_update_dt < today_noon and last_update_dt >= today_midnight:
+                                needs_ai_update = True
+                        except Exception:
+                            needs_ai_update = True
+                    else:
+                        needs_ai_update = True
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
                     
                     try:
-                        time.sleep(12)
+                        # Slumpad paus mellan husen för att skona API-kvoten
+                        time.sleep(5 + random.uniform(0, 3))
+                        
                         ai_result = get_ai_optimized_parameters(
                             prices_today, temp_forecast, default_price_cap=price_cap, target_day_label=f"idag ({house_data.get('name')})"
                         )
@@ -796,24 +813,21 @@ def main():
                             for slot in cheapest_slots[:extra_slots]:
                                 new_schedule[slot] = True
                         
-                        # Om allt gick bra uppdaterar vi schemat
+                        # Om allt gick vägen: uppdatera schemat och nollställ ev. tidigare fel-försök
                         daily_schedule = new_schedule
                         active_schedule_date = today_str
                         ref_device["price_cap"] = p_cap
                         
                         house_data["ai_latest_reasoning"] = reasoning
                         house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                        house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
                         config_updated = True
 
                     except Exception as ai_err:
-                        print(f"[AI UPDATE ERROR] AI-omräkning misslyckades: {ai_err}. Behåller föregående plan.")
-                        
-                        # Om det inte finns något schema alls sedan tidigare (t.ex. vid nyuppstart), 
-                        # sätter vi ett säkert standardblock, annars rör vi ingenting!
-                        if not daily_schedule or len(daily_schedule) != 96:
-                            daily_schedule = [True if (i // 4) in [2, 3, 4, 5, 12, 13, 18, 19] else False for i in range(96)]
-                        
-                        house_data["ai_latest_reasoning"] = f"⚠️ AI-anrop misslyckades ({str(ai_err)[:35]}). Behåller föregående plan."
+                        print(f"[WARNING] Cooldown aktiv: AI-omräkning misslyckades ({ai_err}). Pausar nya försök i 3 timmar.")
+                        house_data["ai_latest_reasoning"] = f"⚠️ AI-anrop misslyckades. Cooldown till aktiv. Behåller föregående plan."
+                        # Spara tidsstämpeln för när det misslyckades så vi slipper spamma igen nästa kvart
+                        house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
                         config_updated = True
 
                 house_data["schedule_date"] = active_schedule_date
