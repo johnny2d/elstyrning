@@ -165,7 +165,7 @@ with st.sidebar:
                         h_data["daily_schedule"] = None
                         h_data["schedule_date"] = ""
                         
-                        time.sleep(12)
+                        time.sleep(6)
                         h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
                         h_zone, h_station = h_data.get("zone", "SE2"), h_data.get("temperatur_nu_station")
                         
@@ -230,7 +230,7 @@ else:
     tab_admin = None
 
 # --- FUNKTION FÖR ATT RITA GRAF ---
-def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key):
+def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key, history_df=None):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     
     # 1. Elpriskurva (Vänster axel - yaxis1)
@@ -255,7 +255,34 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         secondary_y=True
     )
 
-    # 3. Statuspluppar och övergångslinjer (placeras på en egen overlay-axel: yaxis3)
+    # 3. Faktisk Rumstemperatur från historik (om det finns giltiga mätvärden)
+    if history_df is not None and not history_df.empty:
+        temp_col = 'room_temp' if 'room_temp' in history_df.columns else ('device_temp' if 'device_temp' in history_df.columns else None)
+        if temp_col:
+            hist_times = []
+            hist_temps = []
+            for _, row in history_df.iterrows():
+                val = row[temp_col]
+                if pd.notnull(val) and val is not None:
+                    try:
+                        t_str = row['timestamp'].split()[1] # Tar 'HH:MM'
+                        hist_times.append(t_str)
+                        hist_temps.append(float(val))
+                    except Exception:
+                        pass
+            if hist_temps:
+                fig.add_trace(
+                    go.Scatter(
+                        x=hist_times,
+                        y=hist_temps,
+                        name="Faktisk Rumstemp (°C)",
+                        mode="lines+markers",
+                        line=dict(color="#ab47bc", width=2)
+                    ),
+                    secondary_y=True
+                )
+
+    # 4. Statuspluppar och övergångslinjer
     if current_device:
         if is_thermostat:
             t_high = float(current_device.get("target_temp_high", 10.0))
@@ -312,16 +339,13 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         hovermode="x unified", 
         height=420, 
         margin=dict(l=10, r=10, t=30, b=10),
-        # Låt y2 hantera temperaturen med fri skala och heltal
         yaxis2=dict(
-            title="Utetemperatur (°C)",
+            title="Temperatur (°C)",
             anchor="x",
             overlaying="y",
             side="right",
-            tickformat="d",
             showgrid=False
         ),
-        # Låt y3 hantera statusplupparna på intervallet 0 till 1 osynligt
         yaxis3=dict(
             title="",
             anchor="x",
@@ -334,7 +358,6 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
     )
     
     fig.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 # --- TAB 1: DASHBOARD ---
@@ -405,7 +428,18 @@ with tab_dash:
         temp_ext = list(temp_96_today) + [temp_96_today[-1]]
 
         is_therm = current_device.get("type") == "thermostat" if current_device else False
-        render_el_chart(times_ext, prices_ext, temp_ext, schedule_today, is_therm, current_device, "chart_dashboard")
+
+        # Hämta historik-df för den valda enheten idag
+        device_history_df = pd.DataFrame()
+        if history and current_house and current_device:
+            df_h = pd.DataFrame(history)
+            if 'house' in df_h.columns and 'device' in df_h.columns:
+                today_str = now.strftime("%Y-%m-%d")
+                device_history_df = df_h[(df_h['house'] == current_house.get('name')) & 
+                                         (df_h['device'] == current_device.get('name')) & 
+                                         (df_h['timestamp'].str.startswith(today_str))]
+
+        render_el_chart(times_ext, prices_ext, temp_ext, schedule_today, is_therm, current_device, "chart_dashboard", history_df=device_history_df)
 
     st.divider()
     st.markdown("### 🎛️ Husets Enheter")
@@ -419,6 +453,10 @@ with tab_dash:
                     dev.get("device_id"), 
                     device_type=dev.get("type", "switch")
                 ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
+
+                # Hämta ev. separat termometers status
+                thermo_id = dev.get("thermometer_device_id")
+                thermo_conn, _, room_temp = get_tuya_device_status(thermo_id, device_type="thermostat") if thermo_id else (False, "", None)
 
                 with dev_cols[idx % 3]:
                     if not tuya_conn:
@@ -439,8 +477,17 @@ with tab_dash:
                             st.caption(f"Typ: {'Termostat' if is_term else 'Relä / Switch'}")
                             
                             st.markdown(f"**Status:** `{tuya_msg}`")
-                            if dev_temp is not None:
-                                st.markdown(f"**Givartemp:** `{dev_temp:.1f} °C`")
+                            
+                            if is_term and dev_temp is not None:
+                                st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`")
+                            elif thermo_id:
+                                if thermo_conn and room_temp is not None:
+                                    st.markdown(f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` (Mål: {dev.get('target_room_temp', 20.0)}°C)")
+                                else:
+                                    st.markdown(f"🌡️ **Rumstemp:** `OFFLINE / BATTERI? ⚠️`")
+                            else:
+                                st.markdown(f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`")
+                                
                             st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
         else:
             st.info("Inga enheter registrerade för detta hus ännu.")
@@ -452,7 +499,7 @@ with tab_dash:
             if 'house' in df.columns and 'device' in df.columns:
                 df = df[(df['house'] == current_house.get('name')) & (df['device'] == current_device.get('name'))]
             if not df.empty:
-                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'device_temp', 'reason'] if c in df.columns]
+                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'room_temp', 'device_temp', 'reason'] if c in df.columns]
                 st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), use_container_width=True)
             else:
                 st.info("Ingen historik för denna enhet ännu.")
@@ -471,7 +518,9 @@ with tab_settings:
             t_high = st.number_input("Hög temperatur (Komfort) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
             t_low = st.number_input("Låg temperatur (Eco) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
         else:
-            st.info("🤖 **Automatisk optimering aktiv:** Systemet och AI-strategen väljer dynamiskt de absolut billigaste drifttimmar över dygnet baserat på utetemperatur och elprisprognoser.")
+            st.info("🤖 **Automatisk optimering & rumsklimat:** Systemet kombinerar prisoptimeringen med önskad rumstemperatur.")
+            target_r_temp = st.number_input("Önskad rumstemperatur [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_room_temp", 20.0)), step=0.5)
+            thermo_id_input = st.text_input("Tuya Device ID för separat rumstermometer (Valfritt)", value=current_device.get("thermometer_device_id", ""))
 
         force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
 
@@ -479,7 +528,11 @@ with tab_settings:
             if is_thermostat:
                 current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
             else:
-                current_device.update({"force_override": force})
+                current_device.update({
+                    "target_room_temp": target_r_temp, 
+                    "thermometer_device_id": thermo_id_input.strip(),
+                    "force_override": force
+                })
             save_config(config)
 
             dev_id = current_device.get("device_id")
@@ -651,6 +704,8 @@ if is_admin and tab_admin:
                         "device_id": dev_tuya_id,
                         "name": dev_name,
                         "type": dev_type,
+                        "target_room_temp": 20.0,
+                        "thermometer_device_id": "",
                         "force_override": "AUTO"
                     }
                     if dev_type == "thermostat":
