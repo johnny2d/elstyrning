@@ -328,6 +328,9 @@ G) SKYDDSREGLER
 - Komfort är viktigare än maximal besparing.
 - Robust drift är viktigare än högsta möjliga besparingsprocent.
 
+H) PRISOPTIMERING
+- Om energipriset är väldigt högt en kortare period så köp helst inte el precis då utan förvärm innan och köp hellre el innan och efter den dyra perioden.
+
 ==================================================
 MÅLTEMPERATUR
 ==================================================
