@@ -579,6 +579,7 @@ with tab_settings:
             st.success("Lösenordet har uppdaterats!")
 
 # --- TAB 3: SCHEMA & PRISER ---
+
 with tab_sched:
     st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
     
@@ -592,6 +593,13 @@ with tab_sched:
         selected_day = st.radio("Välj dag att granska:", [f"Idag ({today_str})", f"Imorgon ({tomorrow_str})"], horizontal=True)
         is_tomorrow = "Imorgon" in selected_day
         target_dt = now if not is_tomorrow else tomorrow_dt
+        
+        # Visa rätt AI-analys beroende på vald dag
+        if current_house:
+            if not is_tomorrow and current_house.get("ai_latest_reasoning"):
+                st.info(f"🤖 **AI-Strategens analys (Idag):** {current_house.get('ai_latest_reasoning')}")
+            elif is_tomorrow and current_house.get("tomorrow_ai_reasoning"):
+                st.info(f"🤖 **AI-Strategens analys (Imorgon):** {current_house.get('tomorrow_ai_reasoning')}")
         
         house_zone = current_house.get("zone", "SE2")
         prices = get_nordpool_price(zone=house_zone, target_date=target_dt)

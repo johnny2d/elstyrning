@@ -763,7 +763,7 @@ def main():
 
                             house_data["tomorrow_schedule_date"] = tomorrow_str
                             house_data["tomorrow_schedule"] = new_tomorrow_sched
-                            house_data["ai_latest_reasoning"] = reasoning_tom
+                            house_data["tomorrow_ai_reasoning"] = reasoning_tom  # <-- Sparas separat här!
                             config_updated = True
                 except Exception as e:
                     print(f"[ERROR] Misslyckades med morgondagens schema för {house_key}: {e}")
