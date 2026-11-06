@@ -720,8 +720,18 @@ def main():
                         config_updated = True
 
                     except Exception as ai_err:
-                        print(f"[WARNING] Cooldown aktiv: AI-omräkning misslyckades ({ai_err}). Pausar nya försök i 3 timmar.")
-                        house_data["ai_latest_reasoning"] = f"⚠️ AI-anrop misslyckades. Cooldown aktiv. Behåller föregående plan."
+                        print(f"[WARNING] Cooldown aktiv: AI-omräkning misslyckades ({ai_err}). Använder lokal PuLP-reservplan.")
+                        house_data["ai_latest_reasoning"] = f"⚠️ AI-anrop misslyckades ({ai_err}). Använder lokal smart reservplan."
+                        
+                        # Generera ett säkert lokalt schema så appen inte kraschar
+                        fallback_p_cap = max(prices_today) * 0.6 if prices_today else 50.0
+                        daily_schedule = generate_daily_schedule(
+                            prices_today, 
+                            temp_hourly=temp_forecast,
+                            current_temp=current_temp, 
+                            price_cap=fallback_p_cap
+                        )
+                        active_schedule_date = today_str
                         house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
                         config_updated = True
 

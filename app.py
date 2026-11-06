@@ -290,11 +290,17 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                 )
 
     # 4. Statuspluppar och övergångslinjer
+
     if current_device:
+        # Säkra upp att schedule_data är en giltig lista med 96 element
+        if not schedule_data or not isinstance(schedule_data, list) or len(schedule_data) < 96:
+            schedule_data = [False] * 96
+
         if is_thermostat:
             t_high = float(current_device.get("target_temp_high", 10.0))
             t_low = float(current_device.get("target_temp_low", 6.0))
             vals = [t_high if s else t_low for s in schedule_data[:96]]
+            ...
             vals_ext = vals + [vals[-1]]
             fig.add_trace(
                 go.Scatter(
