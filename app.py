@@ -734,59 +734,59 @@ if is_admin and tab_admin:
                     st.success(f"Enhet '{dev_name}' tillagd!")
                     st.rerun()
 
-                    st.divider()
-                    st.write("### 🌡️ Koppla termometer till switch")
-                    st.caption("Välj hus och switch för att koppla en separat Tuya-termometer samt ställa in måltemperatur.")
+        st.divider()
+        st.write("### 🌡️ Koppla termometer till switch")
+        st.caption("Välj hus och switch för att koppla en separat Tuya-termometer samt ställa in måltemperatur.")
+        
+        if houses:
+            admin_house_key = st.selectbox(
+                "Välj hus för koppling", 
+                list(houses.keys()), 
+                format_func=lambda k: houses[k].get("name", k), 
+                key="admin_link_house"
+            )
+            target_house = houses[admin_house_key]
+            house_devs = target_house.get("devices", [])
+            
+            # Filtrera fram switchar (eller enheter som inte är termostater)
+            switch_devs = [d for d in house_devs if d.get("type", "switch") == "switch"]
+            
+            if switch_devs:
+                switch_names = {d.get("id"): d.get("name") for d in switch_devs}
+                selected_sw_id = st.selectbox(
+                    "Välj switch", 
+                    list(switch_names.keys()), 
+                    format_func=lambda sid: switch_names[sid], 
+                    key="admin_link_switch"
+                )
+                
+                # Hitta vald enhet
+                selected_dev = next((d for d in house_devs if d.get("id") == selected_sw_id), None)
+                
+                if selected_dev:
+                    current_thermo = selected_dev.get("thermometer_device_id", "")
+                    current_target = float(selected_dev.get("target_room_temp", 20.0))
                     
-                    if houses:
-                        admin_house_key = st.selectbox(
-                            "Välj hus för koppling", 
-                            list(houses.keys()), 
-                            format_func=lambda k: houses[k].get("name", k), 
-                            key="admin_link_house"
+                    with st.form("link_thermometer_form"):
+                        new_thermo_id = st.text_input(
+                            "Tuya Device ID för rumstermometer", 
+                            value=current_thermo, 
+                            placeholder="T.ex. eb83d... eller liknande Tuya ID"
                         )
-                        target_house = houses[admin_house_key]
-                        house_devs = target_house.get("devices", [])
+                        new_target_temp = st.number_input(
+                            "Önskad rumstemperatur [°C]", 
+                            min_value=5.0, 
+                            max_value=30.0, 
+                            value=current_target, 
+                            step=0.5
+                        )
                         
-                        # Filtrera fram switchar (eller enheter som inte är termostater)
-                        switch_devs = [d for d in house_devs if d.get("type", "switch") == "switch"]
-                        
-                        if switch_devs:
-                            switch_names = {d.get("id"): d.get("name") for d in switch_devs}
-                            selected_sw_id = st.selectbox(
-                                "Välj switch", 
-                                list(switch_names.keys()), 
-                                format_func=lambda sid: switch_names[sid], 
-                                key="admin_link_switch"
-                            )
-                            
-                            # Hitta vald enhet
-                            selected_dev = next((d for d in house_devs if d.get("id") == selected_sw_id), None)
-                            
-                            if selected_dev:
-                                current_thermo = selected_dev.get("thermometer_device_id", "")
-                                current_target = float(selected_dev.get("target_room_temp", 20.0))
-                                
-                                with st.form("link_thermometer_form"):
-                                    new_thermo_id = st.text_input(
-                                        "Tuya Device ID för rumstermometer", 
-                                        value=current_thermo, 
-                                        placeholder="T.ex. eb83d... eller liknande Tuya ID"
-                                    )
-                                    new_target_temp = st.number_input(
-                                        "Önskad rumstemperatur [°C]", 
-                                        min_value=5.0, 
-                                        max_value=30.0, 
-                                        value=current_target, 
-                                        step=0.5
-                                    )
-                                    
-                                    if st.form_submit_button("💾 Spara termometerkoppling", type="primary"):
-                                        selected_dev["thermometer_device_id"] = new_thermo_id.strip()
-                                        selected_dev["target_target_temp" if "target_target_temp" in selected_dev else "target_room_temp"] = new_target_temp
-                                        save_config(config)
-                                        st.cache_data.clear()
-                                        st.success(f"Termometer kopplad till '{selected_dev.get('name')}'!")
-                                        st.rerun()
-                        else:
-                            st.info("Det finns inga switch-enheter inlagda i det här huset än. Lägg till en enhet i sektionen ovanför först.")
+                        if st.form_submit_button("💾 Spara termometerkoppling", type="primary"):
+                            selected_dev["thermometer_device_id"] = new_thermo_id.strip()
+                            selected_dev["target_room_temp"] = new_target_temp
+                            save_config(config)
+                            st.cache_data.clear()
+                            st.success(f"Termometer kopplad till '{selected_dev.get('name')}'!")
+                            st.rerun()
+            else:
+                st.info("Det finns inga switch-enheter inlagda i det här huset än. Lägg till en enhet i sektionen ovanför först.")
