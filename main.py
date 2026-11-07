@@ -453,51 +453,39 @@ def generate_daily_schedule(
     cold_threshold=5.0, 
     min_minutes_cold=15, 
     price_cap=50.0,
-    required_runtime_hours=6,
+    required_runtime_hours=8,
     max_consecutive_off_hours=6
 ):
-    if not prices_96 or len(prices_96) != 96:
-        raise ValueError("Måste skicka in exakt 96 kvartspriser.")
-
-    if temp_hourly is None:
-        temp_hourly = [current_temp] * 24
+    # Vid mildväder (>0°C), tillåt minst 6-8 timmars sammanhängande AV-tid
+    # så att PuLP faktiskt kan samla drifttimmarna till de billiga perioderna!
+    if current_temp > 0:
+        max_consecutive_off_hours = max(max_consecutive_off_hours, 6)
 
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
-    
+
+    # Co-effienter för priskostnad
     costs = []
     for i in range(96):
         price = prices_96[i]
-        
-        if price_cap is not None and price <= price_cap:
-            effective_cost = price * 0.2
-        else:
-            effective_cost = price * 2.0
-
+        # Ge billiga timmar en klar fördel
+        effective_cost = price if (price_cap is None or price <= price_cap) else price * 5.0
         costs.append(x[i] * effective_cost)
 
     prob += pulp.lpSum(costs)
 
-    # 1. AI-dynamiskt krav på total drifttid
+    # 1. Totalt drifttidskrav (exakt eller minst)
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
 
-    # 2. AI-dynamiskt krav på MAX sammanhängande AV-tid (förhindrar långa stopp)
-    max_off_slots = max(4, max_consecutive_off_hours * 4)
+    # 2. Max AV-tid (Nu med tillräckligt stort fönster så PuLP kan klustra timmarna)
+    max_off_slots = max(8, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_slots + 1)]) >= 1
 
-    # 3. Reläskydd (förhindra flimmer)
+    # 3. Reläskydd (Förhindrar enstaka 15-minuters "spikar")
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
-
-    # 4. Köldskydd
-    if current_temp <= cold_threshold and min_minutes_cold > 0:
-        blocks_per_hour_required = max(1, min_minutes_cold // 15)
-        for hour in range(24):
-            start_slot = hour * 4
-            end_slot = start_slot + 4
-            prob += pulp.lpSum([x[j] for j in range(start_slot, end_slot)]) >= blocks_per_hour_required
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
