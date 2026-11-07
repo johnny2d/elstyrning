@@ -103,32 +103,38 @@ def get_nordpool_price(zone="SE2", target_date=None):
     if not target_date:
         target_date = datetime.now(sweden_tz)
 
-    year = target_date.strftime("%Y")
-    month = target_date.strftime("%m")
-    day = target_date.strftime("%d")
+    year = f"{target_date.year:04d}"
+    month = f"{target_date.month:02d}"
+    day = f"{target_date.day:02d}"
+    zone_clean = zone.strip().upper()
     
-    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
+    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
     headers_np = {"User-Agent": "Mozilla/5.0"}
     
-    try:
-        res = requests.get(url, headers=headers_np, timeout=10)
-        print(f"[NORDPOOL] Anropar URL: {url} -> Statuskod: {res.status_code}")
-        if res.status_code == 200:
-            data = res.json()
-            prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-            if len(prices) == 96:
-                return prices
-            elif len(prices) == 24:
-                prices_96 = []
-                for p in prices:
-                    prices_96.extend([p] * 4)
-                return prices_96
-        else:
-            print(f"[ERROR] ElprisetJustNu svarade med HTTP {res.status_code} för URL: {url}")
-    except Exception as e:
-        print(f"[ERROR] Undantag vid hämtning av elpriser: {e}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, headers=headers_np, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+                if len(prices) == 96:
+                    return prices
+                elif len(prices) == 24:
+                    prices_96 = []
+                    for p in prices:
+                        prices_96.extend([p] * 4)
+                    return prices_96
+            else:
+                print(f"[WARNING] Försök {attempt+1}/{max_retries}: ElprisetJustNu svarade med HTTP {res.status_code}")
+        except Exception as e:
+            print(f"[WARNING] Försök {attempt+1}/{max_retries} - Fel vid hämtning av elpriser: {e}")
         
-    print("[WARNING] Använder fallback-priser (50 öre) på grund av hämtningsfel.")
+        # Om det inte lyckades och vi har försök kvar, vänta en stund innan vi provar igen
+        if attempt < max_retries - 1:
+            time.sleep(10)  # Väntar 10 sekunder mellan försöken
+            
+    print("[ERROR] Kunde inte hämta elpriser efter flera försök. Använder fallback.")
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
