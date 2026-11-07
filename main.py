@@ -108,8 +108,10 @@ def get_nordpool_price(zone="SE2", target_date=None):
     day = f"{target_date.day:02d}"
     zone_clean = zone.strip().upper()
     
-    url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
-    headers_np = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://api.elprisetjustnu.se/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
+    print(f"[DEBUG] Försöker hämta elpriser från URL: {url}")  # <-- Här skriver vi ut den exakta länken!
+    
+    headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -130,9 +132,8 @@ def get_nordpool_price(zone="SE2", target_date=None):
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1}/{max_retries} - Fel vid hämtning av elpriser: {e}")
         
-        # Om det inte lyckades och vi har försök kvar, vänta en stund innan vi provar igen
         if attempt < max_retries - 1:
-            time.sleep(10)  # Väntar 10 sekunder mellan försöken
+            time.sleep(10)
             
     print("[ERROR] Kunde inte hämta elpriser efter flera försök. Använder fallback.")
     return [50.0] * 96
