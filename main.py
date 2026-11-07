@@ -108,37 +108,27 @@ def get_nordpool_price(zone="SE2", target_date=None):
     day = target_date.strftime("%d")
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json"
-    headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers_np = {"User-Agent": "Mozilla/5.0"}
     
-    for attempt in range(2):
-        try:
-            res = requests.get(url, headers=headers_np, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if not isinstance(data, list) or len(data) == 0:
-                    print(f"[WARNING] API returnerade tom lista för {month}-{day}")
-                    break
-
-                prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
-                if len(prices) == 96:
-                    return prices
-                elif len(prices) == 24:
-                    prices_96 = []
-                    for p in prices:
-                        prices_96.extend([p] * 4)
-                    return prices_96
-                else:
-                    print(f"[WARNING] Oväntat antal prisvärden ({len(prices)} st). Anpassar till 96 kvartar.")
-                    while len(prices) < 96:
-                        prices.append(prices[-1])
-                    return prices[:96]
-            else:
-                print(f"[WARNING] ElprisetJustNu svarade med statuskod {res.status_code}")
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} misslyckades vid hämtning av elpriser: {e}")
-            if attempt == 1:
-                print(f"[ERROR] Kunde inte hämta elpriser efter flera försök.")
+    try:
+        res = requests.get(url, headers=headers_np, timeout=10)
+        print(f"[NORDPOOL] Anropar URL: {url} -> Statuskod: {res.status_code}")
+        if res.status_code == 200:
+            data = res.json()
+            prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
+            if len(prices) == 96:
+                return prices
+            elif len(prices) == 24:
+                prices_96 = []
+                for p in prices:
+                    prices_96.extend([p] * 4)
+                return prices_96
+        else:
+            print(f"[ERROR] ElprisetJustNu svarade med HTTP {res.status_code} för URL: {url}")
+    except Exception as e:
+        print(f"[ERROR] Undantag vid hämtning av elpriser: {e}")
         
+    print("[WARNING] Använder fallback-priser (50 öre) på grund av hämtningsfel.")
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (OPEN-METEO) ---
