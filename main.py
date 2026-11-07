@@ -109,7 +109,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
     zone_clean = zone.strip().upper()
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
-    print(f"[DEBUG] Försöker hämta elpriser från URL: {url}")  # <-- Här skriver vi ut den exakta länken!
+    print(f"[DEBUG] FFörsöker hämta elpriser från URL: {url}")  # <-- Här skriver vi ut den exakta länken!
     
     headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
