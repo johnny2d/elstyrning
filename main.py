@@ -252,9 +252,9 @@ Du är en erfaren energiingenjör som optimerar direktverkande elvärme för sm�
 ==================================================
 MÅL & FILOSOFI
 ==================================================
-1. Huset är ett värmelager. Använd dygnets billigaste timmar för uppvärmning.
+1. Huset är ett värmelager. Använd dygnets absolut billigaste timmar för uppvärmning.
 2. Mål-innetemperatur: {target_temp}°C (Denna temperatur ska bibehållas med god komfort).
-3. DRIFTTID STYRS AV KYLA: Utetemperaturen avgör hur många timmar huset MÅSTE värmas per dygn gentemot måltemperaturen. Priset styr BARA när timmarna placeras.
+3. DRIFTTID STYRS AV KYLA: Utetemperaturen ({current_temp}°C) avgör hur många timmar huset MÅSTE värmas per dygn (required_runtime_hours). Priset styr BARA VILKA timmar som väljs.
 4. Robust drift och trygg komfort väger alltid tyngre än sista öres besparing.
 
 ==================================================
@@ -266,24 +266,15 @@ INDATA
 - Prisstatistik: Min {min_price:.1f} öre | Medel {avg_price:.1f} öre | Max {max_price:.1f} öre/kWh
 
 ==================================================
-STYRANDE REGLER FÖR DRIFTTIMMAR (Krav)
+REGLER FÖR PARAMETRAR (VIKTIGT)
 ==================================================
-Beräkna required_runtime_hours baserat på dygnsmedeltemperaturen och målet på {target_temp}°C:
-- Mildväder (+5°C till 0°C): Max 6-10 timmar total drift. Huset klarar långa avstängningar.
-- Låg kyla (0°C till -10°C): 10-15 timmar total drift. Balansera pris och komfort.
-- Sträng kyla (-10°C till -20°C): 15-20 timmar total drift. Förvärm aggressivt.
-- Bitande kyla (Under -20°C): 20-24 timmar drift. Prioritera absolut värmebalans.
-
-==================================================
-ÖVRIGA PARAMETRAR
-==================================================
-- price_cap: Sätts strax över dygnets lägre medelpris för att kapa de värsta topparna, men tillåt tillräckligt med drifttimmar. Lägsta tillåtna tak är dygnets minpris.
-- max_consecutive_off_hours: 
-  * Vid mildväder (> 0°C): Får vara upp till 6 timmar.
-  * Vid kyla (< -10°C): Får vara max 2-3 timmar för att undvika kallras.
-- preheat_hours: 1-3 timmar före kända dyra pristoppar eller köldknäppar.
-- comfort_priority: "low" (> +5°C), "medium" (+5 till -10°C), "high" (< -10°C).
-- price_pattern: "flat|single_valley|double_valley|volatile".
+1. required_runtime_hours: Beräkna utifrån dygnsmedeltemperaturen:
+   - Mildväder (+5° till 0°C): 6-10 timmar.
+   - Låg kyla (0° till -10°C): 10-15 timmar.
+   - Sträng kyla (-10° till -20°C): 15-20 timmar.
+2. price_cap: Sätt ALDRIG pristaket lägre än dygnets medelpris ({avg_price:.1f} öre). Pristaket ska sättas på den övre halvan av prisspannen (förslagsvis nära 70-80% av maxpriset eller strax över medel) så att optimeringsmotorn har tillräckligt med utrymme att välja de billigaste timmarna utan att slå i taket i unödan.
+3. max_consecutive_off_hours: Max antal timmar huset får vara utan värme i rad (2-4 timmar vid kyla, upp till 6 timmar vid mildväder).
+4. preheat_hours: 1-3 timmar förvärmning före dagens dyraste timmar om det behövs.
 
 ==================================================
 UTDATA (Strikt JSON)
