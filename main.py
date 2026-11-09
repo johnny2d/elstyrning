@@ -546,10 +546,14 @@ def generate_daily_schedule(
     required_runtime_hours=8,
     max_consecutive_off_hours=6
 ):
-    # Vid mildväder (>0°C), tillåt minst 6-8 timmars sammanhängande AV-tid
-    # så att PuLP faktiskt kan samla drifttimmarna till de billiga perioderna!
-    if current_temp > 0:
-        max_consecutive_off_hours = max(max_consecutive_off_hours, 6)
+
+    print(
+    f"[PULP START] "
+    f"price_cap={price_cap} | "
+    f"runtime={required_runtime_hours}h | "
+    f"max_off={max_consecutive_off_hours}h | "
+    f"utetemp={current_temp:.1f}C"
+    )
 
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
@@ -578,7 +582,22 @@ def generate_daily_schedule(
         prob += x[i] <= x[i - 1] + x[i + 1]
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    return [bool(x[i].varValue) if x[i].varValue is not None else False for i in range(96)]
+    result_schedule = [
+        bool(x[i].varValue)
+        if x[i].varValue is not None
+        else False
+        for i in range(96)
+    ]
+
+    active_blocks = sum(result_schedule)
+
+    print(
+        f"[PULP RESULT] "
+        f"Aktiva block={active_blocks}/96 "
+        f"({active_blocks/4:.1f}h)"
+    )
+
+    return result_schedule
 
 # --- HUVUDLOGIK ---
 def main():
@@ -709,12 +728,28 @@ def main():
                             default_price_cap=price_cap, 
                             target_day_label=f"idag ({house_data.get('name')})"
                         )
+                        ai_result = get_ai_optimized_parameters(
+                        prices_today,
+                        temp_forecast,
+                        current_temp=current_temp,
+                        target_temp=house_target_temp,
+                        default_price_cap=price_cap,
+                        target_day_label=f"idag ({house_data.get('name')})"
+                        )
                         
                         p_cap = ai_result["price_cap"]
                         req_runtime = ai_result["required_runtime_hours"]
                         max_off_h = ai_result["max_consecutive_off_hours"]
                         preheat_hours = ai_result["preheat_hours"]
                         reasoning = ai_result["motivering"]
+
+                        print(
+                        f"[PULP INPUT] {house_data.get('name')} | "
+                        f"price_cap={p_cap} | "
+                        f"runtime={req_runtime}h | "
+                        f"max_off={max_off_h}h | "
+                        f"temp={current_temp:.1f}C"
+)
 
                         new_schedule = generate_daily_schedule(
                             prices_today, 
