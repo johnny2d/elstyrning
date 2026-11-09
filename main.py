@@ -572,48 +572,59 @@ def generate_daily_schedule(
     f"utetemp={current_temp:.1f}C"
     )
 
+    # -------------------------------------------------------------
+    # SÄKERHETSSPÄRR BASERAD PÅ FYSIK OCH VÄDER
+    # Om det är kallt ute (lägre än +3°C), tillåt ALDRIG att huset
+    # står utan värme i mer än 2-3 timmar i rad, oavsett elpris.
+    # -------------------------------------------------------------
+    if temp_hourly and len(temp_hourly) >= 24:
+        min_forecast_temp = min(temp_hourly)
+    else:
+        min_forecast_temp = current_temp
+
+    if min_forecast_temp <= 3.0:
+        # Vid kyla: Tvinga korta, regelbundna avstängningar (max 3h)
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
+        required_runtime_hours = max(required_runtime_hours, 12)
+    
+    if min_forecast_temp <= 0.0:
+        # Vid nollgradigt eller minus: Max 2 timmar av (förhindrar utkylning)
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
+        required_runtime_hours = max(required_runtime_hours, 14)
+
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
-    # Co-effienter för priskostnad
+    # Kostnadsberäkning med mjukt straff vid pristoppar
     costs = []
     for i in range(96):
         price = prices_96[i]
-        # Ge billiga timmar en klar fördel
-        effective_cost = price if (price_cap is None or price <= price_cap) else price * 5.0
+        # Om priset är över pristaket får det ett kraftigt straff, 
+        # men inte oändligt (så PuLP kan köra ändå om max-off-regeln kräver det)
+        if price_cap is not None and price > price_cap:
+            effective_cost = price * 4.0
+        else:
+            effective_cost = price
         costs.append(x[i] * effective_cost)
 
     prob += pulp.lpSum(costs)
 
-    # 1. Totalt drifttidskrav (exakt eller minst)
+    # 1. Totalt drifttidskrav över dygnet
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
 
-    # 2. Max AV-tid (Nu med tillräckligt stort fönster så PuLP kan klustra timmarna)
-    max_off_slots = max(8, max_consecutive_off_hours * 4)
+    # 2. Max AV-tid (Det fysiska stängslet som tvingar in värmepuffar)
+    max_off_slots = max(4, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_slots + 1)]) >= 1
 
-    # 3. Reläskydd (Förhindrar enstaka 15-minuters "spikar")
+    # 3. Reläskydd (Förhindrar flimmer och enstaka 15-minutersspikar)
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
+    # Kör optimeringen
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    result_schedule = [
-        bool(x[i].varValue)
-        if x[i].varValue is not None
-        else False
-        for i in range(96)
-    ]
-
-    active_blocks = sum(result_schedule)
-
-    print(
-        f"[PULP RESULT] "
-        f"Aktiva block={active_blocks}/96 "
-        f"({active_blocks/4:.1f}h)"
-    )
-
+    
     return result_schedule
 
 # --- HUVUDLOGIK ---
