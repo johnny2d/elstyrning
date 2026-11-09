@@ -494,6 +494,11 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         return False, ("OFF" if device_type == "switch" else "N/A"), None
 
+    print(
+        f"[TUYA STATUS] "
+        f"device_id={device_id} "
+        f"type={device_type}"
+    )
     for attempt in range(2):
         try:
             cloud = tinytuya.Cloud(
@@ -503,11 +508,23 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                 devId=device_id
             )
             status_data = cloud.getstatus(device_id)
+            print(
+            f"[TUYA RAW RESPONSE] "
+            f"{device_id}: {status_data}"
+            )
 
             if status_data and status_data.get("success"):
                 result = status_data.get("result", [])
                 current_state = "OFF" if device_type == "switch" else "N/A"
                 measured_temp = None
+
+                for item in result:
+                    print(
+                        f"[TUYA DP] "
+                        f"code={item.get('code')} "
+                        f"value={item.get('value')}"
+                    )
+
                 
                 if isinstance(result, list):
                     for item in result:
