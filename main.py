@@ -622,8 +622,15 @@ def generate_daily_schedule(
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
+    
     # Kör optimeringen
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    
+    # Bygg listan med booleska värden från optimeringsvariablerna
+    result_schedule = [
+        bool(x[i].varValue) if x[i].varValue is not None else False 
+        for i in range(96)
+    ]
     
     return result_schedule
 
