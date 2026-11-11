@@ -646,14 +646,14 @@ def generate_daily_schedule(
             max_consecutive_off_hours, 5
         )
 
-        print(
-            f"[PULP SAFETY] "
-            f"hours_below_zero={hours_below_zero} | "
-            f"hours_below_minus5={hours_below_minus5} | "
-            f"hours_below_minus15={hours_below_minus15} | "
-            f"runtime_after_rules={required_runtime_hours}h | "
-            f"max_off_after_rules={max_consecutive_off_hours}h"
-        )
+    print(
+        f"[PULP SAFETY] "
+        f"hours_below_zero={hours_below_zero} | "
+        f"hours_below_minus5={hours_below_minus5} | "
+        f"hours_below_minus15={hours_below_minus15} | "
+        f"runtime_after_rules={required_runtime_hours}h | "
+        f"max_off_after_rules={max_consecutive_off_hours}h"
+    )
 
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
