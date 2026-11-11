@@ -602,26 +602,59 @@ def generate_daily_schedule(
     else:
         min_forecast_temp = current_temp
 
-    if min_forecast_temp <= 5.0:
-        # Vid kyla: Tvinga korta, regelbundna avstängningar (max 4h)
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 4)
-        required_runtime_hours = max(required_runtime_hours, 12)
-    
-    if min_forecast_temp <= 0.0:
-        # Vid nollgradigt eller minus: Max 3 timmar av (förhindrar utkylning)
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
-        required_runtime_hours = max(required_runtime_hours, 14)
-
-    if min_forecast_temp <= -15.0:
-            # Vid kyla: Tvinga korta, regelbundna avstängningar (max 2h)
-            max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
-            required_runtime_hours = max(required_runtime_hours, 14)
-    print(
-        f"[PULP SAFETY] "
-        f"min_forecast={min_forecast_temp:.1f}C | "
-        f"runtime_after_rules={required_runtime_hours}h | "
-        f"max_off_after_rules={max_consecutive_off_hours}h"
+   # Hur många timmar är det faktiskt kallt?
+    hours_below_zero = sum(
+        1 for t in temp_hourly if t <= 0
     )
+
+    hours_below_minus5 = sum(
+        1 for t in temp_hourly if t <= -5
+    )
+
+    hours_below_minus15 = sum(
+        1 for t in temp_hourly if t <= -15
+    )
+
+    # Anpassa efter hur länge kylan faktiskt varar
+
+    if hours_below_minus15 >= 12:
+        max_consecutive_off_hours = min(
+            max_consecutive_off_hours, 2
+        )
+        required_runtime_hours = max(
+            required_runtime_hours, 16
+        )
+
+    elif hours_below_minus5 >= 8:
+        max_consecutive_off_hours = min(
+            max_consecutive_off_hours, 3
+        )
+        required_runtime_hours = max(
+            required_runtime_hours, 12
+        )
+
+    elif hours_below_zero >= 18:
+        max_consecutive_off_hours = min(
+            max_consecutive_off_hours, 4
+        )
+        required_runtime_hours = max(
+            required_runtime_hours, 12
+        )
+
+    elif hours_below_zero >= 8:
+        max_consecutive_off_hours = min(
+            max_consecutive_off_hours, 5
+        )
+
+        print(
+            f"[PULP SAFETY] "
+            f"hours_below_zero={hours_below_zero} | "
+            f"hours_below_minus5={hours_below_minus5} | "
+            f"hours_below_minus15={hours_below_minus15} | "
+            f"runtime_after_rules={required_runtime_hours}h | "
+            f"max_off_after_rules={max_consecutive_off_hours}h"
+        )
+
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
