@@ -530,36 +530,37 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                     for item in result:
                         code = item.get("code", "").lower()
                         val = item.get("value")
-                        if device_type == "thermostat":
-                            TEMPERATURE_CODES = [
-                            "va_temperature",
-                            "temp_current",
-                            "temperature",
-                            "room_temp",
-                            "sensor_temp"
-                        ]
 
-                        if code in TEMPERATURE_CODES:
-                            try:
-                                v = float(val)
-                                measured_temp = v / 10.0 if v > 50 else v
-                            except:
-                                pass
+                        if device_type == "thermostat":
+
+                            TEMPERATURE_CODES = [
+                                "va_temperature",
+                                "temp_current",
+                                "temperature",
+                                "room_temp",
+                                "sensor_temp"
+                            ]
+
+                            if code in TEMPERATURE_CODES:
                                 try:
                                     v = float(val)
                                     measured_temp = v / 10.0 if v > 50 else v
                                 except:
                                     pass
+
                             if "temp_set" in code or "target" in code:
                                 try:
                                     v = float(val)
                                     current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
                                 except:
                                     current_state = str(val)
+
                         else:
                             if "switch" in code:
                                 current_state = "ON" if val else "OFF"
+
                 return True, current_state, measured_temp
+
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR ({device_id})]: {e}")
     
@@ -819,6 +820,12 @@ def main():
                             default_price_cap=price_cap, 
                             target_day_label=f"idag ({house_data.get('name')})"
                         )
+                        
+                        p_cap = ai_result["price_cap"]
+                        req_runtime = ai_result["required_runtime_hours"]
+                        max_off_h = ai_result["max_consecutive_off_hours"]
+                        preheat_hours = ai_result["preheat_hours"]
+                        reasoning = ai_result["motivering"]
                         print(
                             f"[AI RESULT] "
                             f"price_cap={p_cap} | "
@@ -826,11 +833,6 @@ def main():
                             f"max_off={max_off_h}h | "
                             f"preheat={preheat_hours}h"
                         )
-                        p_cap = ai_result["price_cap"]
-                        req_runtime = ai_result["required_runtime_hours"]
-                        max_off_h = ai_result["max_consecutive_off_hours"]
-                        preheat_hours = ai_result["preheat_hours"]
-                        reasoning = ai_result["motivering"]
                         print(
                             f"[AI REASONING] "
                             f"{reasoning}"
@@ -941,7 +943,7 @@ def main():
 
                     if not dev_id:
                         continue
-
+                    dev_schedule = daily_schedule
                     if dev_price_cap != price_cap:
                         dev_schedule = generate_daily_schedule(
                             prices_today,
