@@ -632,7 +632,7 @@ def generate_daily_schedule(
         # Om priset är över pristaket får det ett kraftigt straff, 
         # men inte oändligt (så PuLP kan köra ändå om max-off-regeln kräver det)
         if price_cap is not None and price > price_cap:
-            effective_cost = price * 4.0
+            effective_cost = price * 10.0
         else:
             effective_cost = price
         costs.append(x[i] * effective_cost)
