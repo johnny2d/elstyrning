@@ -322,7 +322,7 @@ Vid sådana förhållanden ska modellen hellre:
 - minska risken för utkylning
 
 än att jaga maximal besparingsprocent.
-Om elpriset ligger nära dygnets lägre tredjedel eller stora delar av dygnet ligger under ungefär 10-30 öre/kWh:
+Om elpriset ligger nära dygnets lägre tredjedel eller stora delar av dygnet ligger under ungefär 10-30 öre/kWh och dygnets medeltemperatur är kallare än -5°C ska modellen hellre:
 - kostnadsoptimeringen ska tonas ned
 - värmelagring ska prioriteras högt
 - extra uppvärmning är acceptabel
