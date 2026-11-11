@@ -602,16 +602,26 @@ def generate_daily_schedule(
     else:
         min_forecast_temp = current_temp
 
-    if min_forecast_temp <= 3.0:
-        # Vid kyla: Tvinga korta, regelbundna avstängningar (max 3h)
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
+    if min_forecast_temp <= 5.0:
+        # Vid kyla: Tvinga korta, regelbundna avstängningar (max 4h)
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 4)
         required_runtime_hours = max(required_runtime_hours, 12)
     
     if min_forecast_temp <= 0.0:
-        # Vid nollgradigt eller minus: Max 2 timmar av (förhindrar utkylning)
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
+        # Vid nollgradigt eller minus: Max 3 timmar av (förhindrar utkylning)
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
         required_runtime_hours = max(required_runtime_hours, 14)
 
+    if min_forecast_temp <= -15.0:
+            # Vid kyla: Tvinga korta, regelbundna avstängningar (max 2h)
+            max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
+            required_runtime_hours = max(required_runtime_hours, 14)
+    print(
+        f"[PULP SAFETY] "
+        f"min_forecast={min_forecast_temp:.1f}C | "
+        f"runtime_after_rules={required_runtime_hours}h | "
+        f"max_off_after_rules={max_consecutive_off_hours}h"
+    )
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
