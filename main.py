@@ -417,8 +417,8 @@ Returnera endast JSON och ingen annan text.
         price_pattern = str(data.get("price_pattern", "volatile"))
         motivering = data.get("motivering", "AI-beräkning utförd.")
         
-        if max_consecutive_off_hours > 4:
-            max_consecutive_off_hours = 4
+        if max_consecutive_off_hours > 6:
+            max_consecutive_off_hours = 6
 
         if prices_96 and price_cap < min_price:
             price_cap = min_price + 5.0
@@ -531,7 +531,20 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                         code = item.get("code", "").lower()
                         val = item.get("value")
                         if device_type == "thermostat":
-                            if "temp_current" in code or "room" in code or "sensor" in code:
+                            TEMPERATURE_CODES = [
+                            "va_temperature",
+                            "temp_current",
+                            "temperature",
+                            "room_temp",
+                            "sensor_temp"
+                        ]
+
+                        if code in TEMPERATURE_CODES:
+                            try:
+                                v = float(val)
+                                measured_temp = v / 10.0 if v > 50 else v
+                            except:
+                                pass
                                 try:
                                     v = float(val)
                                     measured_temp = v / 10.0 if v > 50 else v
@@ -612,6 +625,31 @@ def generate_daily_schedule(
         f"[PULP RESULT] "
         f"Aktiva block={active_blocks}/96 "
         f"({active_blocks/4:.1f}h)"
+    )
+    print(
+        f"[PULP CHECK] "
+        f"requested={required_runtime_hours}h | "
+        f"actual={active_blocks/4:.1f}h"
+    )
+    off_runs = []
+    run = 0
+
+    for state in result_schedule:
+        if not state:
+            run += 1
+        else:
+            if run:
+                off_runs.append(run)
+            run = 0
+
+    if run:
+        off_runs.append(run)
+
+    longest_off = max(off_runs) / 4 if off_runs else 0
+
+    print(
+        f"[PULP OFF] "
+        f"longest_off={longest_off:.2f}h"
     )
 
     return result_schedule
@@ -731,12 +769,23 @@ def main():
                             needs_ai_update = True
                     else:
                         needs_ai_update = True
-
+                print(
+                    f"[HOUSE LOOP] "
+                    f"house={house_data.get('name')} | "
+                    f"schedule_date={house_data.get('schedule_date')} | "
+                    f"today={today_str} | "
+                    f"last_ai_update={house_data.get('last_ai_update')} | "
+                    f"needs_ai_update={needs_ai_update}"
+                )
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
                     
                     try:
                         time.sleep(5 + random.uniform(0, 3))
+                        print(
+                            f"[AI START] "
+                            f"{house_data.get('name')}"
+                        )
                         ai_result = get_ai_optimized_parameters(
                             prices_today, 
                             temp_forecast, 
@@ -745,21 +794,22 @@ def main():
                             default_price_cap=price_cap, 
                             target_day_label=f"idag ({house_data.get('name')})"
                         )
-                        ai_result = get_ai_optimized_parameters(
-                        prices_today,
-                        temp_forecast,
-                        current_temp=current_temp,
-                        target_temp=house_target_temp,
-                        default_price_cap=price_cap,
-                        target_day_label=f"idag ({house_data.get('name')})"
+                        print(
+                            f"[AI RESULT] "
+                            f"price_cap={p_cap} | "
+                            f"runtime={req_runtime}h | "
+                            f"max_off={max_off_h}h | "
+                            f"preheat={preheat_hours}h"
                         )
-                        
                         p_cap = ai_result["price_cap"]
                         req_runtime = ai_result["required_runtime_hours"]
                         max_off_h = ai_result["max_consecutive_off_hours"]
                         preheat_hours = ai_result["preheat_hours"]
                         reasoning = ai_result["motivering"]
-
+                        print(
+                            f"[AI REASONING] "
+                            f"{reasoning}"
+                        )
                         print(
                         f"[PULP INPUT] {house_data.get('name')} | "
                         f"price_cap={p_cap} | "
@@ -867,13 +917,14 @@ def main():
                     if not dev_id:
                         continue
 
-                    dev_schedule = daily_schedule
                     if dev_price_cap != price_cap:
                         dev_schedule = generate_daily_schedule(
-                            prices_today, 
+                            prices_today,
                             temp_hourly=temp_forecast,
-                            current_temp=current_temp, 
-                            price_cap=dev_price_cap
+                            current_temp=current_temp,
+                            price_cap=dev_price_cap,
+                            required_runtime_hours=req_runtime,
+                            max_consecutive_off_hours=max_off_h
                         )
 
                     # --- KONTROLLERA EV. KOPPLAD TERMOMETER (BÅDE SWITCH OCH TERMOSTAT) ---

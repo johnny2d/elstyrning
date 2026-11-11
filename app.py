@@ -491,17 +491,30 @@ with tab_dash:
                             
                             if is_term and dev_temp is not None:
                                 st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`")
+
                             elif thermo_id:
                                 if thermo_conn and room_temp is not None:
-                                    st.markdown(f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` (Mål: {dev.get('target_room_temp', 20.0)}°C)")
+                                    st.markdown(
+                                        f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` "
+                                        f"(Mål: {dev.get('target_room_temp', 20.0)}°C)"
+                                )
+                                elif thermo_conn:
+                                    st.markdown(
+                                        "🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`"
+                                )
                                 else:
-                                    st.markdown(f"🌡️ **Rumstemp:** `OFFLINE / BATTERI? ⚠️`")
+                                    st.markdown(
+                                        "🌡️ **Rumstemp:** `OFFLINE ⚠️`"
+                                )
+
                             else:
-                                st.markdown(f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`")
-                                
-                            st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
-        else:
-            st.info("Inga enheter registrerade för detta hus ännu.")
+                                st.markdown(
+                                    f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`"
+                            )
+
+                            st.markdown(
+                                f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`"
+                            )
 
     st.divider()
     with st.expander("📊 Visa rådata / Historiklogg per kvart"):
