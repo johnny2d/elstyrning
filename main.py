@@ -305,7 +305,7 @@ Om dyrperioden överstiger cirka 8 timmar ska extra försiktighet användas.
 Långa dyrperioder kräver normalt någon form av värmelagring eller stödvärme även om temperaturen är positiv.
 Undvik långa sammanhängande perioder utan uppvärmning.
 
-C) MYCKET BILLIGA ELPRISER
+C) MYCKET BILLIGA ELPRISER vid dygnsmedeltemperatur kallare än -5°C
 EKONOMISK REALISM
 
 Systemet ska optimera verklig kostnad i kronor,
