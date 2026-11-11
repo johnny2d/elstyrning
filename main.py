@@ -109,7 +109,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
     zone_clean = zone.strip().upper()
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
-    print(f"[DEBUG] FFörsöker hämta elpriser från URL: {url}")  # <-- Här skriver vi ut den exakta länken!
+    print(f"[DEBUG] FFörsöker hämta elpriser från URL: {url}")
     
     headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
@@ -206,6 +206,29 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
 
     return 5.0
 
+# --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS (DETERMINISTISKT) ---
+def calculate_required_runtime(temp_forecast, current_temp=5.0):
+    if not temp_forecast or len(temp_forecast) < 24:
+        temp_forecast = [current_temp] * 24
+        
+    avg_temp = sum(temp_forecast) / len(temp_forecast)
+    hours_below_zero = sum(1 for t in temp_forecast if t <= 0)
+    hours_below_minus5 = sum(1 for t in temp_forecast if t <= -5)
+    hours_below_minus15 = sum(1 for t in temp_forecast if t <= -15)
+
+    if hours_below_minus15 >= 12:
+        return 16
+    elif hours_below_minus5 >= 8:
+        return 12
+    elif hours_below_zero >= 18:
+        return 12
+    elif hours_below_zero >= 8:
+        return 10
+    elif avg_temp < 5.0:
+        return 8
+    else:
+        return 6
+
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag"):
     min_price = min(prices_96) if prices_96 else 50.0
@@ -214,25 +237,12 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
     
     sorted_prices = sorted(prices_96) if prices_96 else [50.0]
     local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]
-
-    # Beräkna rimligt fallback-antal drifttimmar baserat på dygnsmedeltemp
     avg_temp = sum(temp_hourly) / len(temp_hourly) if temp_hourly else current_temp
-    if avg_temp >= 5.0:
-        fallback_runtime = 6
-    elif avg_temp >= 0.0:
-        fallback_runtime = 8
-    elif avg_temp >= -10.0:
-        fallback_runtime = 12
-    elif avg_temp >= -20.0:
-        fallback_runtime = 16
-    else:
-        fallback_runtime = 22
 
     def build_fallback(motivering_text):
         fallback_price_cap = max(min_price, local_smart_price_cap)
         return {
             "price_cap": fallback_price_cap,
-            "required_runtime_hours": fallback_runtime,
             "max_consecutive_off_hours": 4 if avg_temp >= 0 else 2,
             "preheat_hours": 1 if avg_temp < 0 else 0,
             "comfort_priority": "high" if avg_temp < -10 else "medium",
@@ -368,12 +378,11 @@ UTDATA
 Returnera ENDAST giltig JSON:
 {{
   "price_cap": float,
-  "required_runtime_hours": int,
   "max_consecutive_off_hours": int,
   "preheat_hours": int,
   "comfort_priority": "low|medium|high",
   "price_pattern": "flat|single_valley|double_valley|volatile",
-  "motivering": "kort svensk motivering"
+  "motivering": "kort svensk motivering utan att nämna specifik drifttid"
 }}
 Returnera endast JSON och ingen annan text.
 """
@@ -410,13 +419,11 @@ Returnera endast JSON och ingen annan text.
         data = json.loads(clean_json)
         print(
             f"[AI RAW] "
-            f"runtime={data.get('required_runtime_hours')} | "
             f"max_off={data.get('max_consecutive_off_hours')} | "
             f"price_cap={data.get('price_cap')} | "
             f"preheat={data.get('preheat_hours')}"
         )
         price_cap = float(data.get("price_cap", default_price_cap))
-        required_runtime_hours = int(data.get("required_runtime_hours", fallback_runtime))
         max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 4))
         preheat_hours = int(data.get("preheat_hours", 0))
         comfort_priority = str(data.get("comfort_priority", "medium"))
@@ -432,7 +439,6 @@ Returnera endast JSON och ingen annan text.
 
         return {
             "price_cap": price_cap,
-            "required_runtime_hours": required_runtime_hours,
             "max_consecutive_off_hours": max_consecutive_off_hours,
             "preheat_hours": preheat_hours,
             "comfort_priority": comfort_priority,
@@ -605,42 +611,29 @@ def generate_daily_schedule(
    # Hur många timmar är det faktiskt kallt?
     hours_below_zero = sum(
         1 for t in temp_hourly if t <= 0
-    )
+    ) if temp_hourly else 0
 
     hours_below_minus5 = sum(
         1 for t in temp_hourly if t <= -5
-    )
+    ) if temp_hourly else 0
 
     hours_below_minus15 = sum(
         1 for t in temp_hourly if t <= -15
-    )
+    ) if temp_hourly else 0
 
-    # Anpassa efter hur länge kylan faktiskt varar
-
+    # Anpassa max-off efter hur länge kylan faktiskt varar
     if hours_below_minus15 >= 12:
         max_consecutive_off_hours = min(
             max_consecutive_off_hours, 2
         )
-        required_runtime_hours = max(
-            required_runtime_hours, 16
-        )
-
     elif hours_below_minus5 >= 8:
         max_consecutive_off_hours = min(
             max_consecutive_off_hours, 3
         )
-        required_runtime_hours = max(
-            required_runtime_hours, 12
-        )
-
     elif hours_below_zero >= 18:
         max_consecutive_off_hours = min(
             max_consecutive_off_hours, 4
         )
-        required_runtime_hours = max(
-            required_runtime_hours, 12
-        )
-
     elif hours_below_zero >= 8:
         max_consecutive_off_hours = min(
             max_consecutive_off_hours, 5
@@ -685,7 +678,6 @@ def generate_daily_schedule(
     for i in range(1, 95):
         prob += x[i] <= x[i - 1] + x[i + 1]
 
-    
     # Kör optimeringen
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
@@ -852,6 +844,10 @@ def main():
                     f"last_ai_update={house_data.get('last_ai_update')} | "
                     f"needs_ai_update={needs_ai_update}"
                 )
+
+                # Beräkna drifttid deterministiskt i Python baserat på temperaturprognosen
+                req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
+
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
                     
@@ -871,7 +867,6 @@ def main():
                         )
                         
                         p_cap = ai_result["price_cap"]
-                        req_runtime = ai_result["required_runtime_hours"]
                         max_off_h = ai_result["max_consecutive_off_hours"]
                         preheat_hours = ai_result["preheat_hours"]
                         reasoning = ai_result["motivering"]
@@ -927,7 +922,8 @@ def main():
                             prices_today, 
                             temp_hourly=temp_forecast,
                             current_temp=current_temp, 
-                            price_cap=fallback_p_cap
+                            price_cap=fallback_p_cap,
+                            required_runtime_hours=req_runtime
                         )
                         active_schedule_date = today_str
                         house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
@@ -941,7 +937,8 @@ def main():
                         tomorrow_dt = now + timedelta(days=1)
                         prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
                         temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
-                        
+                        req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
+
                         if len(set(prices_tomorrow)) > 1: 
                             time.sleep(5 + random.uniform(0, 3))
                             ai_result_tom = get_ai_optimized_parameters(
@@ -954,7 +951,6 @@ def main():
                             )
                             
                             p_cap_tom = ai_result_tom["price_cap"]
-                            req_runtime_tom = ai_result_tom["required_runtime_hours"]
                             max_off_h_tom = ai_result_tom["max_consecutive_off_hours"]
                             preheat_hours_tom = ai_result_tom["preheat_hours"]
                             reasoning_tom = ai_result_tom["motivering"]
