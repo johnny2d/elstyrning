@@ -408,7 +408,13 @@ Returnera endast JSON och ingen annan text.
     try:
         clean_json = raw_text.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
-        
+        print(
+            f"[AI RAW] "
+            f"runtime={data.get('required_runtime_hours')} | "
+            f"max_off={data.get('max_consecutive_off_hours')} | "
+            f"price_cap={data.get('price_cap')} | "
+            f"preheat={data.get('preheat_hours')}"
+        )
         price_cap = float(data.get("price_cap", default_price_cap))
         required_runtime_hours = int(data.get("required_runtime_hours", fallback_runtime))
         max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 4))
