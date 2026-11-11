@@ -657,8 +657,21 @@ with tab_sched:
             render_el_chart(times_extended, prices_extended, temp_extended, schedule, is_thermostat, current_device, "chart_schedule")
 
             sched_avg = sum(prices[:96]) / len(prices[:96]) if prices else 0.0
-            active_p_sched = [prices[i] for i in range(min(len(prices), len(schedule))) if schedule[i]]
-            sched_active_avg = sum(active_p_sched) / len(active_p_sched) if active_p_sched else sched_avg
+            if prices and schedule:
+                active_p_sched = [
+                    prices[i]
+                    for i in range(min(len(prices), len(schedule)))
+                    if schedule[i]
+                ]
+
+                sched_active_avg = (
+                    sum(active_p_sched) / len(active_p_sched)
+                    if active_p_sched else sched_avg
+                )
+            else:
+                active_p_sched = []
+                sched_active_avg = sched_avg            
+                
             sched_savings_pct = max(0.0, ((sched_avg - sched_active_avg) / sched_avg) * 100.0) if sched_avg > 0 else 0.0
 
             m1, m2, m3 = st.columns(3)
