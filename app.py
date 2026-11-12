@@ -116,7 +116,7 @@ if not st.session_state["authenticated"]:
         with st.form("login_form"):
             u_in = st.text_input("Användarnamn")
             p_in = st.text_input("Lösenord", type="password")
-            if st.form_submit_button("Logga in", use_container_width=True, type="primary"):
+            if st.form_submit_button("Logga in", width="stretch", type="primary"):
                 ok, msg = login_user(u_in, p_in)
                 if ok:
                     st.success(msg)
@@ -417,7 +417,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
     )
     
     fig.update_yaxes(title_text="Elpris (öre/kWh)", secondary_y=False)
-    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+    st.plotly_chart(fig, width="stretch", key=chart_key)
 
 # --- TAB 1: DASHBOARD ---
 with tab_dash:
@@ -570,7 +570,7 @@ with tab_dash:
                 df = df[(df['house'] == current_house.get('name')) & (df['device'] == current_device.get('name'))]
             if not df.empty:
                 cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'room_temp', 'device_temp', 'reason'] if c in df.columns]
-                st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), use_container_width=True)
+                st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width="stretch")
             else:
                 st.info("Ingen historik för denna enhet ännu.")
         else:

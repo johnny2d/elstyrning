@@ -648,10 +648,9 @@ def main():
             except Exception:
                 pass
 
-        prices_today = get_nordpool_price(zone="SE2", target_date=now)
+        
         quarter_index = (now.hour * 4) + (now.minute // 15)
-        current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
-
+       
         if "houses" not in config:
             config = {
                 "houses": {
@@ -694,6 +693,10 @@ def main():
                 lat = house_data.get("lat", 63.25)
                 lon = house_data.get("lon", 14.56)
                 station = house_data.get("temperatur_nu_station", "ostersund")
+                zone = house_data.get("zone", "SE2")
+                
+                prices_today = get_nordpool_price(zone=zone, target_date=now)
+                current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
                 
                 current_temp = get_outside_temp(station=station, lat=lat, lon=lon)
                 temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now)
@@ -804,7 +807,7 @@ def main():
                 try:
                     if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
                         tomorrow_dt = now + timedelta(days=1)
-                        prices_tomorrow = get_nordpool_price(zone="SE2", target_date=tomorrow_dt)
+                        prices_tomorrow = get_nordpool_price(zone=zone, target_date=tomorrow_dt)
                         temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
                         req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
 
