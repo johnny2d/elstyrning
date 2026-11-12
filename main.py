@@ -341,7 +341,6 @@ Returnera ENDAST giltig JSON:
 {{
   "price_cap": float,
   "max_consecutive_off_hours": int,
-  "preheat_hours": int,
   "comfort_priority": "low|medium|high",
   "price_pattern": "flat|single_valley|double_valley|volatile",
   "motivering": "kort svensk motivering utan att nämna specifik drifttid"

@@ -361,13 +361,16 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
             trans_y = []
 
             for i in range(len(times_ext)):
-                if i < 96:
-                    if schedule_data[i]:
-                        on_vals[i] = 1.0
-                    else:
-                        off_vals[i] = 0.0
+                is_on_current = (i < 96 and schedule_data[i])
+                is_on_prev = (i > 0 and schedule_data[min(i-1, 95)])
+                
+                # Ritar plupp vid kvartens start OCH vid kvartens slut (övergången)
+                if is_on_current or is_on_prev:
+                    on_vals[i] = 1.0
+                if (i < 96 and not schedule_data[i]) or (i > 0 and not schedule_data[min(i-1, 95)]):
+                    off_vals[i] = 0.0
 
-                if i > 0 and i < 96 and (schedule_data[i] != schedule_data[i-1]):
+                if i > 0 and (schedule_data[min(i, 95)] != schedule_data[min(i-1, 95)]):
                     trans_x.extend([times_ext[i], times_ext[i], None])
                     trans_y.extend([0.0, 1.0, None])
 
