@@ -29,7 +29,8 @@ from main import (
     get_nordpool_price, 
     get_outside_temp, 
     get_hourly_temp_forecast,
-    get_ai_optimized_parameters
+    get_ai_optimized_parameters,
+    calculate_required_runtime
 )
 
 st.set_page_config(page_title="Elstyrning Control Panel", page_icon="⚡", layout="wide")
@@ -175,12 +176,21 @@ with st.sidebar:
                         
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
+                        house_target_temp = float(ref.get("target_room_temp", 20.0))
                         
-                        ai_res = get_ai_optimized_parameters(prices, forecast, default_price_cap=ref.get("price_cap", 50.0), target_day_label=f"idag ({h_data.get('name')})")
+                        req_runtime = calculate_required_runtime(forecast, current_temp=curr_temp)
+                        
+                        ai_res = get_ai_optimized_parameters(
+                            prices, 
+                            forecast, 
+                            current_temp=curr_temp,
+                            target_temp=house_target_temp,
+                            default_price_cap=ref.get("price_cap", 50.0), 
+                            required_runtime_hours=req_runtime,
+                            target_day_label=f"idag ({h_data.get('name')})"
+                        )
                         p_cap = ai_res["price_cap"]
-                        req_runtime = ai_res["required_runtime_hours"]
                         max_off_h = ai_res["max_consecutive_off_hours"]
-                        preheat_hours = ai_res["preheat_hours"]
                         reasoning = ai_res["motivering"]
 
                         sched = generate_daily_schedule(
@@ -191,12 +201,6 @@ with st.sidebar:
                             required_runtime_hours=req_runtime,
                             max_consecutive_off_hours=max_off_h
                         )
-                        
-                        if preheat_hours > 0:
-                            cheapest_slots = sorted(range(len(prices)), key=lambda i: prices[i])
-                            extra_slots = preheat_hours * 4
-                            for slot in cheapest_slots[:extra_slots]:
-                                sched[slot] = True
 
                         h_data.update({
                             "schedule_date": today_str, 
@@ -253,7 +257,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
         secondary_y=True
     )
 
-  # 3. Faktisk Rumstemperatur från historik (mappad mot de 96 kvartarna)
+    # 3. Faktisk Rumstemperatur från historik (mappad mot de 96 kvartarna)
     if history_df is not None and not history_df.empty:
         temp_col = 'room_temp' if 'room_temp' in history_df.columns else ('device_temp' if 'device_temp' in history_df.columns else None)
         if temp_col:
@@ -262,7 +266,6 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                 val = row[temp_col]
                 if pd.notnull(val) and val is not None:
                     try:
-                        # Extrahera timme och minut från 'YYYY-MM-DD HH:MM'
                         time_part = row['timestamp'].split()[1]
                         h, m = map(int, time_part.split(':'))
                         q_idx = (h * 4) + (m // 15)
@@ -271,7 +274,6 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                     except Exception:
                         pass
             
-            # Förläng med 1 element för att matcha times_ext (som har 97 punkter till 24:00)
             room_temps_ext = room_temps_96 + [room_temps_96[-1] if room_temps_96[-1] is not None else None]
             
             if any(v is not None for v in room_temps_ext):
@@ -288,9 +290,7 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                 )
 
     # 4. Statuspluppar och övergångslinjer
-
     if current_device:
-        # Säkra upp att schedule_data är en giltig lista med 96 element
         if not schedule_data or not isinstance(schedule_data, list) or len(schedule_data) < 96:
             schedule_data = [False] * 96
 
@@ -298,7 +298,6 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
             t_high = float(current_device.get("target_temp_high", 10.0))
             t_low = float(current_device.get("target_temp_low", 6.0))
             vals = [t_high if s else t_low for s in schedule_data[:96]]
-            ...
             vals_ext = vals + [vals[-1]]
             fig.add_trace(
                 go.Scatter(
@@ -314,15 +313,13 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
             trans_y = []
 
             for i in range(len(times_ext)):
-                is_on_current = (i < 96 and schedule_data[i])
-                is_on_prev = (i > 0 and schedule_data[i-1])
-                
-                if is_on_current or is_on_prev:
-                    on_vals[i] = 1.0
-                if (i < 96 and not schedule_data[i]) or (i > 0 and not schedule_data[i-1]):
-                    off_vals[i] = 0.0
+                if i < 96:
+                    if schedule_data[i]:
+                        on_vals[i] = 1.0
+                    else:
+                        off_vals[i] = 0.0
 
-                if i > 0 and (schedule_data[min(i, 95)] != schedule_data[min(i-1, 95)]):
+                if i > 0 and i < 96 and (schedule_data[i] != schedule_data[i-1]):
                     trans_x.extend([times_ext[i], times_ext[i], None])
                     trans_y.extend([0.0, 1.0, None])
 
@@ -440,7 +437,6 @@ with tab_dash:
 
         is_therm = current_device.get("type") == "thermostat" if current_device else False
 
-        # Hämta historik-df för den valda enheten idag
         device_history_df = pd.DataFrame()
         if history and current_house and current_device:
             df_h = pd.DataFrame(history)
@@ -465,7 +461,6 @@ with tab_dash:
                     device_type=dev.get("type", "switch")
                 ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
 
-                # Hämta ev. separat termometers status
                 thermo_id = dev.get("thermometer_device_id")
                 thermo_conn, _, room_temp = get_tuya_device_status(thermo_id, device_type="thermostat") if thermo_id else (False, "", None)
 
@@ -596,7 +591,6 @@ with tab_settings:
             st.success("Lösenordet har uppdaterats!")
 
 # --- TAB 3: SCHEMA & PRISER ---
-
 with tab_sched:
     st.subheader(f"📅 Planerat elschema & temperaturprofil för {current_house.get('name') if current_house else 'Hus'}")
     
@@ -611,7 +605,6 @@ with tab_sched:
         is_tomorrow = "Imorgon" in selected_day
         target_dt = now if not is_tomorrow else tomorrow_dt
         
-        # Visa rätt AI-analys beroende på vald dag
         if current_house:
             if not is_tomorrow and current_house.get("ai_latest_reasoning"):
                 st.info(f"🤖 **AI-Strategens analys (Idag):** {current_house.get('ai_latest_reasoning')}")
@@ -643,7 +636,14 @@ with tab_sched:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
                     curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                    schedule = generate_daily_schedule(prices, temp_hourly=temp_forecast, current_temp=curr_temp, price_cap=500.0)
+                    req_runtime_tom = calculate_required_runtime(temp_forecast, current_temp=curr_temp)
+                    schedule = generate_daily_schedule(
+                        prices, 
+                        temp_hourly=temp_forecast, 
+                        current_temp=curr_temp, 
+                        price_cap=50.0,
+                        required_runtime_hours=req_runtime_tom
+                    )
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
@@ -774,7 +774,6 @@ if is_admin and tab_admin:
             target_house = houses[admin_house_key]
             house_devs = target_house.get("devices", [])
             
-            # Filtrera fram switchar (eller enheter som inte är termostater)
             switch_devs = [d for d in house_devs if d.get("type", "switch") == "switch"]
             
             if switch_devs:
@@ -786,7 +785,6 @@ if is_admin and tab_admin:
                     key="admin_link_switch"
                 )
                 
-                # Hitta vald enhet
                 selected_dev = next((d for d in house_devs if d.get("id") == selected_sw_id), None)
                 
                 if selected_dev:

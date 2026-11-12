@@ -230,7 +230,7 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
         return 6
 
 # --- AI STRATEGEN (GEMINI) ---
-def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", required_runtime_hours=8, **kwargs):
+def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", required_runtime_hours=None, **kwargs):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
@@ -239,8 +239,8 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
     local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]
     avg_temp = sum(temp_hourly) / len(temp_hourly) if temp_hourly else current_temp
 
-    # Om required_runtime_hours skickas med från app.py kan vi logga eller använda det om det behövs
-    passed_runtime = kwargs.get("required_runtime_hours", None)
+    if required_runtime_hours is None:
+        required_runtime_hours = calculate_required_runtime(temp_hourly, current_temp=current_temp)
 
     def build_fallback(motivering_text):
         fallback_price_cap = max(min_price, local_smart_price_cap)
@@ -332,7 +332,7 @@ G) SKYDDSREGLER
 ==================================================
 MÅLTEMPERATUR
 ==================================================
-Önskad inomhustemperatur: 20°C
+Önskad inomhustemperatur: {target_temp}°C
 
 ==================================================
 UTDATA
@@ -387,7 +387,7 @@ Returnera endast JSON och ingen annan text.
         )
         price_cap = float(data.get("price_cap", default_price_cap))
         max_consecutive_off_hours = int(data.get("max_consecutive_off_hours", 4))
-        preheat_hours = int(data.get("preheat_hours", 0))
+        preheat_hours = 0  # Låst till 0 så att PuLP-optimeringen inte skrivs över i efterhand
         comfort_priority = str(data.get("comfort_priority", "medium"))
         price_pattern = str(data.get("price_pattern", "volatile"))
         motivering = data.get("motivering", "AI-beräkning utförd.")
@@ -531,11 +531,6 @@ def generate_daily_schedule(
         f"max_off={max_consecutive_off_hours}h | "
         f"utetemp={current_temp:.1f}C"
     )
-
-    if temp_hourly and len(temp_hourly) >= 24:
-        min_forecast_temp = min(temp_hourly)
-    else:
-        min_forecast_temp = current_temp
 
     hours_below_zero = sum(1 for t in temp_hourly if t <= 0) if temp_hourly else 0
     hours_below_minus5 = sum(1 for t in temp_hourly if t <= -5) if temp_hourly else 0
@@ -749,6 +744,7 @@ def main():
                         needs_ai_update = True
 
                 req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
+                max_off_h = 4 if (sum(temp_forecast) / len(temp_forecast) if temp_forecast else current_temp) >= 0 else 2
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
@@ -766,7 +762,6 @@ def main():
                         
                         p_cap = ai_result["price_cap"]
                         max_off_h = ai_result["max_consecutive_off_hours"]
-                        preheat_hours = ai_result["preheat_hours"]
                         reasoning = ai_result["motivering"]
 
                         new_schedule = generate_daily_schedule(
@@ -777,13 +772,6 @@ def main():
                             required_runtime_hours=req_runtime,
                             max_consecutive_off_hours=max_off_h
                         )
-
-                        # Om preheat_hours är satt (och > 0), lägg till på de billigaste kvartarna som inte är lokala toppar
-                        if preheat_hours > 0:
-                            cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
-                            extra_slots = preheat_hours * 4
-                            for slot in cheapest_slots[:extra_slots]:
-                                new_schedule[slot] = True
                         
                         daily_schedule = new_schedule
                         active_schedule_date = today_str
@@ -804,7 +792,8 @@ def main():
                             temp_hourly=temp_forecast,
                             current_temp=current_temp, 
                             price_cap=fallback_p_cap,
-                            required_runtime_hours=req_runtime
+                            required_runtime_hours=req_runtime,
+                            max_consecutive_off_hours=max_off_h
                         )
                         active_schedule_date = today_str
                         house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
@@ -828,12 +817,12 @@ def main():
                                 current_temp=current_temp,
                                 target_temp=house_target_temp,
                                 default_price_cap=price_cap, 
+                                required_runtime_hours=req_runtime_tom,
                                 target_day_label=f"imorgon ({house_data.get('name')})"
                             )
                             
                             p_cap_tom = ai_result_tom["price_cap"]
                             max_off_h_tom = ai_result_tom["max_consecutive_off_hours"]
-                            preheat_hours_tom = ai_result_tom["preheat_hours"]
                             reasoning_tom = ai_result_tom["motivering"]
 
                             new_tomorrow_sched = generate_daily_schedule(
@@ -844,12 +833,6 @@ def main():
                                 required_runtime_hours=req_runtime_tom,
                                 max_consecutive_off_hours=max_off_h_tom
                             )
-
-                            if preheat_hours_tom > 0:
-                                cheapest_slots_tom = sorted(range(len(prices_tomorrow)), key=lambda i: prices_tomorrow[i])
-                                extra_slots_tom = preheat_hours_tom * 4
-                                for slot in cheapest_slots_tom[:extra_slots_tom]:
-                                    new_tomorrow_sched[slot] = True
 
                             house_data["tomorrow_schedule_date"] = tomorrow_str
                             house_data["tomorrow_schedule"] = new_tomorrow_sched
