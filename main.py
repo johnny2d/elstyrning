@@ -109,7 +109,7 @@ def get_nordpool_price(zone="SE2", target_date=None):
     zone_clean = zone.strip().upper()
     
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
-    print(f"[DEBUG] FFörsöker hämta elpriser från URL: {url}")
+    print(f"[DEBUG] Försöker hämta elpriser från URL: {url}")
     
     headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
@@ -244,7 +244,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
         return {
             "price_cap": fallback_price_cap,
             "max_consecutive_off_hours": 4 if avg_temp >= 0 else 2,
-            "preheat_hours": 1 if avg_temp < 0 else 0,
+            "preheat_hours": 0,  # Sätts till 0 för att låta den lokala toppkapningen sköta dalar/toppar rent
             "comfort_priority": "high" if avg_temp < -10 else "medium",
             "price_pattern": "volatile",
             "motivering": motivering_text
@@ -298,7 +298,7 @@ Identifiera:
 6. Om en kall period följer efter en billig period
 7. Om en dyr period sammanfaller med stark kyla
 8. Om prisprofilen är jämn eller mycket volatil
-9. Dela upp dygnet i tre delar: morgon, dag, kväll/natt och analysera prisprofilen för varje del för att undvika perioder med långvarig avstängning.
+9. Dela upp dygnet i tre delar: morgon, dag, kväll/natt och analysera prisprofilen för varje del.
 10. Identifiera om det finns risk för att huset kyls ut under dygnets dyraste perioder.
 
 ==================================================
@@ -306,66 +306,24 @@ VIKTIGA PRINCIPER
 ==================================================
 A) VÄRMELAGRING
 Huset fungerar som ett värmelager.
-Om flera billiga timmar föregår en dyr period ska värme flyttas till dessa billigare timmar genom förvärmning.
-Om mycket låga priser förekommer före en kall natt ska förvärmning prioriteras.
-Ju längre den kommande dyrperioden är, desto större värde har förvärmning.
+Om flera billiga timmar föregår en dyr period ska värme flyttas till dessa billigare timmar.
 
 B) LÅNGA DYRPERIODER
 Om dyrperioden överstiger cirka 8 timmar ska extra försiktighet användas.
-Långa dyrperioder kräver normalt någon form av värmelagring eller stödvärme även om temperaturen är positiv.
-Undvik långa sammanhängande perioder utan uppvärmning.
 
-C) MYCKET BILLIGA ELPRISER vid dygnsmedeltemperatur kallare än -5°C
-EKONOMISK REALISM
-
-Systemet ska optimera verklig kostnad i kronor,
-inte besparingsprocent.
-
-Om stora delar av dygnet ligger under cirka
-10-20 öre/kWh finns ofta liten ekonomisk nytta
-av ytterligare optimering.
-
-Vid sådana förhållanden ska modellen hellre:
-
-- öka driftstid
-- vara konservativ
-- minska risken för utkylning
-
-än att jaga maximal besparingsprocent.
-Om elpriset ligger nära dygnets lägre tredjedel eller stora delar av dygnet ligger under ungefär 10-30 öre/kWh och dygnets medeltemperatur är kallare än -5°C ska modellen hellre:
-- kostnadsoptimeringen ska tonas ned
-- värmelagring ska prioriteras högt
-- extra uppvärmning är acceptabel
-- aggressiva avstängningar ska undvikas
-
-När elen redan är mycket billig finns ofta liten ekonomisk nytta av att pressa drifttiden ytterligare.
+C) EKONOMISK REALISM
 Modellen ska inte jaga högsta möjliga besparingsprocent om elpriset redan är mycket lågt utan prioritera komfort och robust drift.
 
 D) TEMPERATUR OCH KOMFORT
-Över +10°C: komfortbehovet är relativt lågt, mer prisoptimering kan användas.
+Över +10°C: komfortbehovet är relativt lågt.
 Mellan 5°C och -10°C: komfort och ekonomi ska balanseras.
-Mellan -10°C och -20°C: komfortprioritet ska öka, förvärm mycket på tider med billig el.
-Under -20°C: komfort prioriteras högt, kallrasrisk är betydande, förvärm mycket på tider med billig el.
-
-E) OKÄND VÄRMETRÖGHET
-Ingen faktisk innetemperatur finns tillgänglig.
-Husets verkliga värmetröghet är därför okänd.
-Vid osäkerhet ska rekommendationen vara konservativ.
-
-F) PRISMÖNSTER
-Om två tydliga lågprisfönster finns under samma dygn: fördela uppvärmningen mellan dessa.
-Om prisprofilen är relativt jämn: prioritera komfort framför aggressiv optimering.
-Om stora prisskillnader förekommer: utnyttja värmetrögheten aktivt.
+Mellan -10°C och -20°C: komfortprioritet ska öka.
+Under -20°C: komfort prioriteras högt.
 
 G) SKYDDSREGLER
 - Sätt aldrig price_cap lägre än dygnets lägsta pris.
 - Sätt aldrig max_consecutive_off_hours högre än 6 timmar.
 - Huset får aldrig riskera att kylas ut.
-- Komfort är viktigare än maximal besparing.
-- Robust drift är viktigare än högsta möjliga besparingsprocent.
-
-H) PRISOPTIMERING
-- Om energipriset är väldigt högt en kortare period så köp helst inte el precis då utan förvärm innan och köp hellre el innan och efter den dyra perioden.
 
 ==================================================
 MÅLTEMPERATUR
@@ -437,13 +395,6 @@ Returnera endast JSON och ingen annan text.
             price_cap = min_price + 5.0
             motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta pris)."
 
-        # --- NY SPÄRR: Förhindra att pristaket drar iväg orimligt högt ---
-        if prices_96:
-            sorted_p = sorted(prices_96)
-            p80 = sorted_p[int(len(sorted_p) * 0.8)]
-            if price_cap > p80 and p80 > min_price:
-                price_cap = max(p80, min_price + 5.0)
-                motivering += f" (Justering: Pristaket begränsades till {price_cap:.1f} öre för att säkerställa aktiv toppkapning)."
         return {
             "price_cap": price_cap,
             "max_consecutive_off_hours": max_consecutive_off_hours,
@@ -456,14 +407,7 @@ Returnera endast JSON och ingen annan text.
     except Exception as e:
         err_msg = str(e)
         print(f"[AI ERROR DETALJ]: {err_msg}")
-        
-        fallback_price_cap = max(min_price, local_smart_price_cap)
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "Quota" in err_msg:
-            mot_text = f"Reservplan aktiv: AI-kvot slut (429). Använder smart lokal beräkning (Pristak: {fallback_price_cap:.1f} öre)."
-        else:
-            mot_text = f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}). Använder lokal beräkning."
-
-        return build_fallback(mot_text)
+        return build_fallback(f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}).")
 
 # --- TUYA CLOUD STYRNING & STATUS ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch"):
@@ -513,11 +457,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         return False, ("OFF" if device_type == "switch" else "N/A"), None
 
-    print(
-        f"[TUYA STATUS] "
-        f"device_id={device_id} "
-        f"type={device_type}"
-    )
+    print(f"[TUYA STATUS] device_id={device_id} type={device_type}")
     for attempt in range(2):
         try:
             cloud = tinytuya.Cloud(
@@ -527,10 +467,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                 devId=device_id
             )
             status_data = cloud.getstatus(device_id)
-            print(
-            f"[TUYA RAW RESPONSE] "
-            f"{device_id}: {status_data}"
-            )
+            print(f"[TUYA RAW RESPONSE] {device_id}: {status_data}")
 
             if status_data and status_data.get("success"):
                 result = status_data.get("result", [])
@@ -538,12 +475,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                 measured_temp = None
 
                 for item in result:
-                    print(
-                        f"[TUYA DP] "
-                        f"code={item.get('code')} "
-                        f"value={item.get('value')}"
-                    )
-
+                    print(f"[TUYA DP] code={item.get('code')} value={item.get('value')}")
                 
                 if isinstance(result, list):
                     for item in result:
@@ -551,29 +483,19 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                         val = item.get("value")
 
                         if device_type == "thermostat":
-
-                            TEMPERATURE_CODES = [
-                                "va_temperature",
-                                "temp_current",
-                                "temperature",
-                                "room_temp",
-                                "sensor_temp"
-                            ]
-
+                            TEMPERATURE_CODES = ["va_temperature", "temp_current", "temperature", "room_temp", "sensor_temp"]
                             if code in TEMPERATURE_CODES:
                                 try:
                                     v = float(val)
                                     measured_temp = v / 10.0 if v > 50 else v
                                 except:
                                     pass
-
                             if "temp_set" in code or "target" in code:
                                 try:
                                     v = float(val)
                                     current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
                                 except:
                                     current_state = str(val)
-
                         else:
                             if "switch" in code:
                                 current_state = "ON" if val else "OFF"
@@ -585,7 +507,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
     
     return False, ("OFF" if device_type == "switch" else "N/A"), None
 
-# --- PULP OPTIMERINGSMOTOR ---
+# --- PULP OPTIMERINGSMOTOR MED LOKAL TOPPKAPNING ---
 def generate_daily_schedule(
     prices_96, 
     temp_hourly=None,
@@ -598,53 +520,30 @@ def generate_daily_schedule(
 ):
 
     print(
-    f"[PULP START] "
-    f"price_cap={price_cap} | "
-    f"runtime={required_runtime_hours}h | "
-    f"max_off={max_consecutive_off_hours}h | "
-    f"utetemp={current_temp:.1f}C"
+        f"[PULP START] "
+        f"price_cap={price_cap} | "
+        f"runtime={required_runtime_hours}h | "
+        f"max_off={max_consecutive_off_hours}h | "
+        f"utetemp={current_temp:.1f}C"
     )
 
-    # -------------------------------------------------------------
-    # SÄKERHETSSPÄRR BASERAD PÅ FYSIK OCH VÄDER
-    # Om det är kallt ute (lägre än +3°C), tillåt ALDRIG att huset
-    # står utan värme i mer än 2-3 timmar i rad, oavsett elpris.
-    # -------------------------------------------------------------
     if temp_hourly and len(temp_hourly) >= 24:
         min_forecast_temp = min(temp_hourly)
     else:
         min_forecast_temp = current_temp
 
-   # Hur många timmar är det faktiskt kallt?
-    hours_below_zero = sum(
-        1 for t in temp_hourly if t <= 0
-    ) if temp_hourly else 0
+    hours_below_zero = sum(1 for t in temp_hourly if t <= 0) if temp_hourly else 0
+    hours_below_minus5 = sum(1 for t in temp_hourly if t <= -5) if temp_hourly else 0
+    hours_below_minus15 = sum(1 for t in temp_hourly if t <= -15) if temp_hourly else 0
 
-    hours_below_minus5 = sum(
-        1 for t in temp_hourly if t <= -5
-    ) if temp_hourly else 0
-
-    hours_below_minus15 = sum(
-        1 for t in temp_hourly if t <= -15
-    ) if temp_hourly else 0
-
-    # Anpassa max-off efter hur länge kylan faktiskt varar
     if hours_below_minus15 >= 12:
-        max_consecutive_off_hours = min(
-            max_consecutive_off_hours, 2
-        )
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
     elif hours_below_minus5 >= 8:
-        max_consecutive_off_hours = min(
-            max_consecutive_off_hours, 3
-        )
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
     elif hours_below_zero >= 18:
-        max_consecutive_off_hours = min(
-            max_consecutive_off_hours, 4
-        )
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 4)
     elif hours_below_zero >= 8:
-        max_consecutive_off_hours = min(
-            max_consecutive_off_hours, 5
-        )
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 5)
 
     print(
         f"[PULP SAFETY] "
@@ -658,16 +557,28 @@ def generate_daily_schedule(
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
-    # Kostnadsberäkning med mjukt straff vid pristoppar
+    # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING (GLIDANDE FÖNSTER) ---
     costs = []
     for i in range(96):
         price = prices_96[i]
-        # Om priset är över pristaket får det ett kraftigt straff, 
-        # men inte oändligt (så PuLP kan köra ändå om max-off-regeln kräver det)
-        if price_cap is not None and price > price_cap:
-            effective_cost = price * 10.0
+        
+        # Beräkna lokalt snittpris för de närmaste 2 timmarna före och efter (±8 kvartar)
+        w_start = max(0, i - 8)
+        w_end = min(96, i + 9)
+        window_prices = prices_96[w_start:w_end]
+        local_avg = sum(window_prices) / len(window_prices) if window_prices else price
+        
+        # Jämför kvartens pris med sitt lokala snitt
+        spike_ratio = price / max(1.0, local_avg)
+        
+        # Om kvarten är en lokal pristopp (> 12% dyrare än omgivande tid) får den ett exponentiellt straff!
+        if spike_ratio > 1.12:
+            effective_cost = price * (spike_ratio ** 3) * 2.5
+        elif price_cap is not None and price > price_cap:
+            effective_cost = price * 5.0
         else:
             effective_cost = price
+            
         costs.append(x[i] * effective_cost)
 
     prob += pulp.lpSum(costs)
@@ -676,38 +587,32 @@ def generate_daily_schedule(
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
 
-    # 2. Max AV-tid (Det fysiska stängslet som tvingar in värmepuffar)
+    # 2. Max AV-tid
     max_off_slots = max(4, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):
         prob += pulp.lpSum([x[j] for j in range(i, i + max_off_slots + 1)]) >= 1
 
-    # 3. Reläskydd (Förhindrar flimmer och enstaka 15-minutersspikar)
+    # 3. Dubbelt reläskydd (Minst 30 min PÅ i sträck och minst 30 min AV i sträck)
     for i in range(1, 95):
+        # PÅ-skydd (-x[i-1] + x[i] - x[i+1] <= 0)
         prob += x[i] <= x[i - 1] + x[i + 1]
+        # AV-skydd (x[i-1] - x[i] + x[i+1] <= 1)
+        prob += x[i - 1] - x[i] + x[i + 1] <= 1
 
     # Kör optimeringen
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
-    # Bygg listan med booleska värden från optimeringsvariablerna
     result_schedule = [
         bool(x[i].varValue) if x[i].varValue is not None else False 
         for i in range(96)
     ]
     active_blocks = sum(result_schedule)
 
-    print(
-        f"[PULP RESULT] "
-        f"Aktiva block={active_blocks}/96 "
-        f"({active_blocks/4:.1f}h)"
-    )
-    print(
-        f"[PULP CHECK] "
-        f"requested={required_runtime_hours}h | "
-        f"actual={active_blocks/4:.1f}h"
-    )
+    print(f"[PULP RESULT] Aktiva block={active_blocks}/96 ({active_blocks/4:.1f}h)")
+    print(f"[PULP CHECK] requested={required_runtime_hours}h | actual={active_blocks/4:.1f}h")
+    
     off_runs = []
     run = 0
-
     for state in result_schedule:
         if not state:
             run += 1
@@ -715,16 +620,11 @@ def generate_daily_schedule(
             if run:
                 off_runs.append(run)
             run = 0
-
     if run:
         off_runs.append(run)
 
     longest_off = max(off_runs) / 4 if off_runs else 0
-
-    print(
-        f"[PULP OFF] "
-        f"longest_off={longest_off:.2f}h"
-    )
+    print(f"[PULP OFF] longest_off={longest_off:.2f}h")
 
     return result_schedule
 
@@ -817,7 +717,6 @@ def main():
                 today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
-                # --- ERROR COOLDOWN KONTROLL (3 TIMMAR) ---
                 last_attempt_str = house_data.get("last_ai_attempt")
                 in_cooldown = False
                 if last_attempt_str:
@@ -843,27 +742,13 @@ def main():
                             needs_ai_update = True
                     else:
                         needs_ai_update = True
-                print(
-                    f"[HOUSE LOOP] "
-                    f"house={house_data.get('name')} | "
-                    f"schedule_date={house_data.get('schedule_date')} | "
-                    f"today={today_str} | "
-                    f"last_ai_update={house_data.get('last_ai_update')} | "
-                    f"needs_ai_update={needs_ai_update}"
-                )
 
-                # Beräkna drifttid deterministiskt i Python baserat på temperaturprognosen
                 req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
-                    
                     try:
                         time.sleep(5 + random.uniform(0, 3))
-                        print(
-                            f"[AI START] "
-                            f"{house_data.get('name')}"
-                        )
                         ai_result = get_ai_optimized_parameters(
                             prices_today, 
                             temp_forecast, 
@@ -877,24 +762,6 @@ def main():
                         max_off_h = ai_result["max_consecutive_off_hours"]
                         preheat_hours = ai_result["preheat_hours"]
                         reasoning = ai_result["motivering"]
-                        print(
-                            f"[AI RESULT] "
-                            f"price_cap={p_cap} | "
-                            f"runtime={req_runtime}h | "
-                            f"max_off={max_off_h}h | "
-                            f"preheat={preheat_hours}h"
-                        )
-                        print(
-                            f"[AI REASONING] "
-                            f"{reasoning}"
-                        )
-                        print(
-                        f"[PULP INPUT] {house_data.get('name')} | "
-                        f"price_cap={p_cap} | "
-                        f"runtime={req_runtime}h | "
-                        f"max_off={max_off_h}h | "
-                        f"temp={current_temp:.1f}C"
-)
 
                         new_schedule = generate_daily_schedule(
                             prices_today, 
@@ -905,6 +772,7 @@ def main():
                             max_consecutive_off_hours=max_off_h
                         )
 
+                        # Om preheat_hours är satt (och > 0), lägg till på de billigaste kvartarna som inte är lokala toppar
                         if preheat_hours > 0:
                             cheapest_slots = sorted(range(len(prices_today)), key=lambda i: prices_today[i])
                             extra_slots = preheat_hours * 4
@@ -1006,7 +874,6 @@ def main():
                             max_consecutive_off_hours=max_off_h
                         )
 
-                    # --- KONTROLLERA EV. KOPPLAD TERMOMETER (BÅDE SWITCH OCH TERMOSTAT) ---
                     thermo_id = dev.get("thermometer_device_id")
                     target_room_temp = float(dev.get("target_room_temp", 20.0))
                     measured_room_temp = None
@@ -1074,7 +941,6 @@ def main():
                             should_be_on = False
                             reason = f"[{dev_name}] Manuell överstyrning: Stäng AV"
                         else:
-                            # 1. Kolla först schemat från PuLP
                             if dev_schedule and len(dev_schedule) == 96:
                                 should_be_on = dev_schedule[quarter_index]
                                 reason = f"[{dev_name}] PuLP-schema: Status {'PÅ' if should_be_on else 'AV'} vid {current_price:.1f} öre"
@@ -1082,7 +948,6 @@ def main():
                                 should_be_on = (current_price <= dev_price_cap)
                                 reason = f"[{dev_name}] Reservregel (Inget schema): Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
-                            # 2. Sluten klimatreglering om rumstermometer finns och är online
                             if thermo_active and measured_room_temp is not None:
                                 if measured_room_temp < target_room_temp - 0.5:
                                     should_be_on = True
