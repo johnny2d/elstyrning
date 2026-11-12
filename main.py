@@ -755,6 +755,7 @@ def main():
                             current_temp=current_temp,
                             target_temp=house_target_temp,
                             default_price_cap=price_cap, 
+                            required_runtime_hours=req_runtime,
                             target_day_label=f"idag ({house_data.get('name')})"
                         )
                         
