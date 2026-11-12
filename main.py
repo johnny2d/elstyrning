@@ -215,7 +215,10 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
     hours_below_zero = sum(1 for t in temp_forecast if t <= 0)
     hours_below_minus5 = sum(1 for t in temp_forecast if t <= -5)
     hours_below_minus15 = sum(1 for t in temp_forecast if t <= -15)
+    hours_below_minus20 = sum(1 for t in temp_forecast if t <= -20)
 
+    if hours_below_minus20 >= 8:
+        return 20
     if hours_below_minus15 >= 12:
         return 16
     elif hours_below_minus5 >= 8:
@@ -457,9 +460,9 @@ def set_tuya_device(device_id: str, value, device_type: str = "switch"):
             print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando till {device_id}: {e}")
     print(f"[ERROR] Tuya kommando misslyckades för enhet {device_id} efter flera försök.")
 
-def get_tuya_device_status(device_id: str, device_type: str = "switch"):
+def get_tuya_device_status(device_id: str, device_type: str = "switch", include_battery: bool = False):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
-        return False, ("OFF" if device_type == "switch" else "N/A"), None
+        return (False, ("OFF" if device_type == "switch" else "N/A"), None, None) if include_battery else (False, ("OFF" if device_type == "switch" else "N/A"), None)
 
     print(f"[TUYA STATUS] device_id={device_id} type={device_type}")
     for attempt in range(2):
@@ -477,6 +480,7 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                 result = status_data.get("result", [])
                 current_state = "OFF" if device_type == "switch" else "N/A"
                 measured_temp = None
+                battery_level = None
 
                 for item in result:
                     print(f"[TUYA DP] code={item.get('code')} value={item.get('value')}")
@@ -486,29 +490,44 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch"):
                         code = item.get("code", "").lower()
                         val = item.get("value")
 
+                        # Fånga batterinivå (oavsett enhetstyp)
+                        BATTERY_CODES = ["va_battery", "battery_percentage", "battery_value", "battery", "residual_electricity"]
+                        if code in BATTERY_CODES:
+                            try:
+                                battery_level = int(float(val))
+                            except Exception:
+                                battery_level = str(val)
+                        elif code == "battery_state" and battery_level is None:
+                            state_map = {"high": "Hög (100%)", "middle": "Medel (50%)", "low": "Låg ⚠️ (10%)"}
+                            battery_level = state_map.get(str(val).lower(), str(val))
+
                         if device_type == "thermostat":
                             TEMPERATURE_CODES = ["va_temperature", "temp_current", "temperature", "room_temp", "sensor_temp"]
                             if code in TEMPERATURE_CODES:
                                 try:
                                     v = float(val)
                                     measured_temp = v / 10.0 if v > 50 else v
-                                except:
+                                except Exception:
                                     pass
                             if "temp_set" in code or "target" in code:
                                 try:
                                     v = float(val)
                                     current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
-                                except:
+                                except Exception:
                                     current_state = str(val)
                         else:
                             if "switch" in code:
                                 current_state = "ON" if val else "OFF"
 
+                if include_battery:
+                    return True, current_state, measured_temp, battery_level
                 return True, current_state, measured_temp
 
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR ({device_id})]: {e}")
     
+    if include_battery:
+        return False, ("OFF" if device_type == "switch" else "N/A"), None, None
     return False, ("OFF" if device_type == "switch" else "N/A"), None
 
 # --- PULP OPTIMERINGSMOTOR MED LOKAL TOPPKAPNING ---
@@ -534,8 +553,11 @@ def generate_daily_schedule(
     hours_below_zero = sum(1 for t in temp_hourly if t <= 0) if temp_hourly else 0
     hours_below_minus5 = sum(1 for t in temp_hourly if t <= -5) if temp_hourly else 0
     hours_below_minus15 = sum(1 for t in temp_hourly if t <= -15) if temp_hourly else 0
+    hours_below_minus20 = sum(1 for t in temp_hourly if t <= -20) if temp_hourly else 0
 
-    if hours_below_minus15 >= 12:
+    if hours_below_minus20 >= 8:
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 1)
+    elif hours_below_minus15 >= 12:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
     elif hours_below_minus5 >= 8:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
@@ -582,10 +604,13 @@ def generate_daily_schedule(
 
     prob += pulp.lpSum(costs)
 
-    # 1. Totalt drifttidskrav över dygnet
+    # 1. Totalt drifttidskrav över dygnet + balansering mellan dygnshalvor
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
-
+    
+    # Förhindra att all värme hamnar på ena dygnshalvan vid kallfront/prisfall
+    prob += pulp.lpSum([x[i] for i in range(0, 48)]) >= int(required_blocks * 0.35)
+    prob += pulp.lpSum([x[i] for i in range(48, 96)]) >= int(required_blocks * 0.35)
     # 2. Max AV-tid
     max_off_slots = max(4, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):

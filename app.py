@@ -507,13 +507,28 @@ with tab_dash:
         if devs:
             dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
             for idx, dev in enumerate(devs):
-                tuya_conn, tuya_msg, dev_temp = get_tuya_device_status(
+                tuya_conn, tuya_msg, dev_temp, dev_batt = get_tuya_device_status(
                     dev.get("device_id"), 
-                    device_type=dev.get("type", "switch")
-                ) if dev.get("device_id") else (False, "Ej konfigurerad", None)
+                    device_type=dev.get("type", "switch"),
+                    include_battery=True
+                ) if dev.get("device_id") else (False, "Ej konfigurerad", None, None)
 
                 thermo_id = dev.get("thermometer_device_id")
-                thermo_conn, _, room_temp = get_tuya_device_status(thermo_id, device_type="thermostat") if thermo_id else (False, "", None)
+                thermo_conn, _, room_temp, thermo_batt = get_tuya_device_status(
+                    thermo_id, 
+                    device_type="thermostat", 
+                    include_battery=True
+                ) if thermo_id else (False, "", None, None)
+
+                # Hjälpfunktion för att formatera batteritext med ikon
+                def format_battery(batt_val):
+                    if batt_val is None:
+                        return ""
+                    if isinstance(batt_val, int):
+                        icon = "🪫" if batt_val <= 20 else "🔋"
+                        warn = " ⚠️" if batt_val <= 20 else ""
+                        return f" | {icon} **Batteri:** `{batt_val}%`{warn}"
+                    return f" | 🔋 **Batteri:** `{batt_val}`"
 
                 with dev_cols[idx % 3]:
                     if not tuya_conn:
@@ -536,27 +551,28 @@ with tab_dash:
                             st.markdown(f"**Status:** `{tuya_msg}`")
                             
                             if is_term and dev_temp is not None:
-                                st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`")
+                                st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`{format_battery(dev_batt)}")
 
                             elif thermo_id:
                                 if thermo_conn and room_temp is not None:
                                     st.markdown(
                                         f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` "
                                         f"(Mål: {dev.get('target_room_temp', 20.0)}°C)"
-                                )
+                                        f"{format_battery(thermo_batt)}"
+                                    )
                                 elif thermo_conn:
                                     st.markdown(
-                                        "🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`"
-                                )
+                                        f"🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`{format_battery(thermo_batt)}"
+                                    )
                                 else:
                                     st.markdown(
                                         "🌡️ **Rumstemp:** `OFFLINE ⚠️`"
-                                )
+                                    )
 
                             else:
                                 st.markdown(
                                     f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`"
-                            )
+                                )
 
                             st.markdown(
                                 f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`"
@@ -743,9 +759,10 @@ if is_admin and tab_admin:
             st.success("Admin-lösenordet har uppdaterats!")
 
         st.divider()
-        st.write("### 🏠 Huslösenord & Pausläge")
+        st.write("### 🏠 Husinställningar, Elområde & Pausläge")
+        zones_list = ["SE1", "SE2", "SE3", "SE4"]
         for h_k, h_v in houses.items():
-            col_a, col_b, col_c = st.columns([2, 2, 1])
+            col_a, col_b, col_z, col_c = st.columns([2, 2, 1.5, 1])
             with col_a:
                 st.write(f"**{h_v.get('name', h_k)}** {'⏸️' if h_v.get('paused') else ''}")
             with col_b:
@@ -754,6 +771,16 @@ if is_admin and tab_admin:
                     h_v["password"] = new_h_pw
                     save_config(config)
                     st.success(f"Lösenord för {h_v.get('name')} sparades!")
+            with col_z:
+                curr_z = h_v.get("zone", "SE2")
+                z_idx = zones_list.index(curr_z) if curr_z in zones_list else 1
+                new_h_zone = st.selectbox(f"Zon ({h_v.get('name')})", zones_list, index=z_idx, key=f"zone_{h_k}")
+                if new_h_zone != curr_z:
+                    h_v["zone"] = new_h_zone
+                    save_config(config)
+                    st.cache_data.clear()
+                    st.success(f"Elområde ändrat till {new_h_zone}!")
+                    st.rerun()
             with col_c:
                 admin_paused = st.checkbox("Pausat", value=h_v.get("paused", False), key=f"admin_pause_{h_k}")
                 if admin_paused != h_v.get("paused", False):
