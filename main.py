@@ -896,7 +896,7 @@ def main():
                     thermo_active = False
 
                     if thermo_id:
-                        thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat")
+                        thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat", include_battery=False)
 
                     if dev_type == "thermostat":
                         t_high = float(dev.get("target_temp_high", 10.0))
@@ -929,7 +929,7 @@ def main():
                         set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
                         time.sleep(2)
 
-                        connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat")
+                        connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat", include_battery=False)
                         final_room_temp = measured_dev_temp if measured_dev_temp is not None else measured_room_temp
 
                         final_status = f"{target_temp_val}°C"
