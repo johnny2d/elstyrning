@@ -437,6 +437,13 @@ Returnera endast JSON och ingen annan text.
             price_cap = min_price + 5.0
             motivering += f" (Justering: Pristaket höjdes till {price_cap:.1f} öre för att matcha dygnets lägsta pris)."
 
+        # --- NY SPÄRR: Förhindra att pristaket drar iväg orimligt högt ---
+        if prices_96:
+            sorted_p = sorted(prices_96)
+            p80 = sorted_p[int(len(sorted_p) * 0.8)]
+            if price_cap > p80 and p80 > min_price:
+                price_cap = max(p80, min_price + 5.0)
+                motivering += f" (Justering: Pristaket begränsades till {price_cap:.1f} öre för att säkerställa aktiv toppkapning)."
         return {
             "price_cap": price_cap,
             "max_consecutive_off_hours": max_consecutive_off_hours,
