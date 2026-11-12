@@ -230,7 +230,7 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
         return 6
 
 # --- AI STRATEGEN (GEMINI) ---
-def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", **kwargs):
+def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", required_runtime_hours=8, **kwargs):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
@@ -248,6 +248,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
             "price_cap": fallback_price_cap,
             "max_consecutive_off_hours": 4 if avg_temp >= 0 else 2,
             "preheat_hours": 0,
+            "required_runtime_hours": required_runtime_hours,
             "comfort_priority": "high" if avg_temp < -10 else "medium",
             "price_pattern": "volatile",
             "motivering": motivering_text
@@ -402,6 +403,7 @@ Returnera endast JSON och ingen annan text.
             "price_cap": price_cap,
             "max_consecutive_off_hours": max_consecutive_off_hours,
             "preheat_hours": preheat_hours,
+            "required_runtime_hours": required_runtime_hours,
             "comfort_priority": comfort_priority,
             "price_pattern": price_pattern,
             "motivering": motivering
