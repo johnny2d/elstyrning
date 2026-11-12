@@ -230,7 +230,7 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
         return 6
 
 # --- AI STRATEGEN (GEMINI) ---
-def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag"):
+def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", **kwargs):
     min_price = min(prices_96) if prices_96 else 50.0
     max_price = max(prices_96) if prices_96 else 100.0
     avg_price = sum(prices_96) / len(prices_96) if prices_96 else 75.0
@@ -239,12 +239,15 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
     local_smart_price_cap = sorted_prices[len(sorted_prices) // 2]
     avg_temp = sum(temp_hourly) / len(temp_hourly) if temp_hourly else current_temp
 
+    # Om required_runtime_hours skickas med från app.py kan vi logga eller använda det om det behövs
+    passed_runtime = kwargs.get("required_runtime_hours", None)
+
     def build_fallback(motivering_text):
         fallback_price_cap = max(min_price, local_smart_price_cap)
         return {
             "price_cap": fallback_price_cap,
             "max_consecutive_off_hours": 4 if avg_temp >= 0 else 2,
-            "preheat_hours": 0,  # Sätts till 0 för att låta den lokala toppkapningen sköta dalar/toppar rent
+            "preheat_hours": 0,
             "comfort_priority": "high" if avg_temp < -10 else "medium",
             "price_pattern": "volatile",
             "motivering": motivering_text
