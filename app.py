@@ -155,66 +155,114 @@ with st.sidebar:
     if is_admin:
         st.write("### ⚡ Admin-verktyg")
         if st.button("🚀 Forcera AI-omräkning", type="primary"):
-            with st.spinner("Beräknar om scheman..."):
-                try:
-                    now = datetime.now(sweden_tz)
-                    today_str = now.strftime("%Y-%m-%d")
-                    for h_key, h_data in houses.items():
-                        if h_data.get("paused", False):
-                            continue
-                        
-                        h_data["daily_schedule"] = None
-                        h_data["schedule_date"] = ""
-                        
-                        time.sleep(6)
+            with st.spinner("Beräknar om scheman för idag och imorgon..."):
+                now = datetime.now(sweden_tz)
+                today_str = now.strftime("%Y-%m-%d")
+                tomorrow_dt = now + timedelta(days=1)
+                tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+                
+                any_updated = False
+
+                for h_key, h_data in houses.items():
+                    if h_data.get("paused", False):
+                        continue
+                    
+                    h_name = h_data.get("name", h_key)
+                    try:
+                        # Vi nollställer INTE befintliga scheman här. 
+                        # De ligger kvar som fallback tills nya beräkningar är 100% klara.
                         h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
-                        h_zone, h_station = h_data.get("zone", "SE2"), h_data.get("temperatur_nu_station")
+                        h_zone = h_data.get("zone", "SE2")
+                        h_station = h_data.get("temperatur_nu_station")
                         
                         curr_temp = get_outside_temp(station=h_station, lat=h_lat, lon=h_lon)
-                        prices = get_nordpool_price(zone=h_zone, target_date=now)
-                        forecast = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
-                        
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
+                        default_p_cap = ref.get("price_cap", 50.0)
                         house_target_temp = float(ref.get("target_room_temp", 20.0))
+
+                        # --- 1. BERÄKNA IDAG ---
+                        time.sleep(4)
+                        prices_today = get_nordpool_price(zone=h_zone, target_date=now)
+                        forecast_today = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
+                        req_runtime_today = calculate_required_runtime(forecast_today, current_temp=curr_temp)
                         
-                        req_runtime = calculate_required_runtime(forecast, current_temp=curr_temp)
-                        
-                        ai_res = get_ai_optimized_parameters(
-                            prices, 
-                            forecast, 
+                        ai_res_today = get_ai_optimized_parameters(
+                            prices_today, 
+                            forecast_today, 
                             current_temp=curr_temp,
                             target_temp=house_target_temp,
-                            default_price_cap=ref.get("price_cap", 50.0), 
-                            required_runtime_hours=req_runtime,
-                            target_day_label=f"idag ({h_data.get('name')})"
+                            default_price_cap=default_p_cap, 
+                            required_runtime_hours=req_runtime_today,
+                            target_day_label=f"idag ({h_name})"
                         )
-                        p_cap = ai_res["price_cap"]
-                        max_off_h = ai_res["max_consecutive_off_hours"]
-                        reasoning = ai_res["motivering"]
-
-                        sched = generate_daily_schedule(
-                            prices, 
-                            temp_hourly=forecast, 
+                        
+                        sched_today = generate_daily_schedule(
+                            prices_today, 
+                            temp_hourly=forecast_today, 
                             current_temp=curr_temp, 
-                            price_cap=p_cap,
-                            required_runtime_hours=req_runtime,
-                            max_consecutive_off_hours=max_off_h
+                            price_cap=ai_res_today["price_cap"],
+                            required_runtime_hours=req_runtime_today,
+                            max_consecutive_off_hours=ai_res_today["max_consecutive_off_hours"]
                         )
 
-                        h_data.update({
-                            "schedule_date": today_str, 
-                            "daily_schedule": sched, 
-                            "ai_latest_reasoning": reasoning, 
-                            "last_ai_update": now.strftime("%Y-%m-%d %H:%M")
-                        })
-                    
+                        # Skriv över dagens schema först när vi har ett giltigt resultat (96 kvartar)
+                        if sched_today and len(sched_today) == 96:
+                            h_data.update({
+                                "schedule_date": today_str, 
+                                "daily_schedule": sched_today, 
+                                "ai_latest_reasoning": ai_res_today["motivering"], 
+                                "last_ai_update": now.strftime("%Y-%m-%d %H:%M"),
+                                "last_ai_attempt": now.strftime("%Y-%m-%d %H:%M")
+                            })
+                            if devs:
+                                ref["price_cap"] = ai_res_today["price_cap"]
+                            any_updated = True
+
+                        # --- 2. BERÄKNA IMORGON (om Nordpool-priserna har släppts) ---
+                        prices_tom = get_nordpool_price(zone=h_zone, target_date=tomorrow_dt)
+                        if prices_tom and len(set(prices_tom)) > 1:
+                            time.sleep(4)
+                            forecast_tom = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=tomorrow_dt)
+                            req_runtime_tom = calculate_required_runtime(forecast_tom, current_temp=curr_temp)
+
+                            ai_res_tom = get_ai_optimized_parameters(
+                                prices_tom, 
+                                forecast_tom, 
+                                current_temp=curr_temp,
+                                target_temp=house_target_temp,
+                                default_price_cap=default_p_cap, 
+                                required_runtime_hours=req_runtime_tom,
+                                target_day_label=f"imorgon ({h_name})"
+                            )
+
+                            sched_tom = generate_daily_schedule(
+                                prices_tom, 
+                                temp_hourly=forecast_tom, 
+                                current_temp=curr_temp, 
+                                price_cap=ai_res_tom["price_cap"],
+                                required_runtime_hours=req_runtime_tom,
+                                max_consecutive_off_hours=ai_res_tom["max_consecutive_off_hours"]
+                            )
+
+                            # Skriv över morgondagens schema först när vi har ett giltigt resultat
+                            if sched_tom and len(sched_tom) == 96:
+                                h_data.update({
+                                    "tomorrow_schedule_date": tomorrow_str,
+                                    "tomorrow_schedule": sched_tom,
+                                    "tomorrow_ai_reasoning": ai_res_tom["motivering"]
+                                })
+                                any_updated = True
+
+                    except Exception as e:
+                        st.error(f"Kunde inte uppdatera {h_name} (behåller föregående schema som fallback): {e}")
+
+                if any_updated:
                     save_config(config)
                     st.cache_data.clear()
-                    st.success("Nytt PuLP-schema beräknat och sparat!")
+                    st.success("Nya PuLP-scheman (idag & imorgon) beräknade och sparade!")
+                    time.sleep(1)
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Fel: {e}")
 
     if st.button("🚪 Logga ut"):
         st.session_state["authenticated"] = False
