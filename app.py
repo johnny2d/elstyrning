@@ -128,6 +128,7 @@ if not st.session_state["authenticated"]:
 
 is_admin = st.session_state["user_role"] == "admin"
 houses = config.get("houses", {})
+selected_house_key = None
 
 with st.sidebar:
     st.title("⚡ Elstyrning")
@@ -139,7 +140,8 @@ with st.sidebar:
         else:
             current_house = None
     else:
-        current_house = houses.get(st.session_state["assigned_house_key"])
+        selected_house_key = st.session_state.get("assigned_house_key")
+        current_house = houses.get(selected_house_key)
         if current_house:
             st.subheader(f"🏠 **{current_house.get('name')}**")
 
@@ -278,6 +280,20 @@ if is_admin:
 else:
     tab_dash, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
+
+# --- HJÄLPFUNKTION FÖR SÄKER TUYA-STATUS (3 ELLER 4 RETURVÄRDEN) ---
+def safe_tuya_status(d_id, d_type):
+    if not d_id:
+        return False, "Ej konfigurerad", None, None
+    try:
+        res = get_tuya_device_status(d_id, device_type=d_type, include_battery=True)
+    except TypeError:
+        res = get_tuya_device_status(d_id, device_type=d_type)
+    if isinstance(res, tuple) and len(res) == 4:
+        return res
+    elif isinstance(res, tuple) and len(res) == 3:
+        return res[0], res[1], res[2], None
+    return False, "OFF", None, None
 
 # --- FUNKTION FÖR ATT RITA GRAF ---
 def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key, history_df=None):
@@ -425,7 +441,7 @@ with tab_dash:
     if current_house:
         for dev in current_house.get("devices", []):
             if dev.get("device_id"):
-                tuya_conn, _, _ = get_tuya_device_status(dev.get("device_id"), device_type=dev.get("type", "switch"))
+                tuya_conn, _, _, _ = safe_tuya_status(dev.get("device_id"), dev.get("type", "switch"))
                 if not tuya_conn:
                     offline_devices.append(dev.get("name"))
 
@@ -507,17 +523,15 @@ with tab_dash:
         if devs:
             dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
             for idx, dev in enumerate(devs):
-                tuya_conn, tuya_msg, dev_temp, dev_batt = get_tuya_device_status(
+                tuya_conn, tuya_msg, dev_temp, dev_batt = safe_tuya_status(
                     dev.get("device_id"), 
-                    device_type=dev.get("type", "switch"),
-                    include_battery=True
-                ) if dev.get("device_id") else (False, "Ej konfigurerad", None, None)
+                    dev.get("type", "switch")
+                )
 
                 thermo_id = dev.get("thermometer_device_id")
-                thermo_conn, _, room_temp, thermo_batt = get_tuya_device_status(
+                thermo_conn, _, room_temp, thermo_batt = safe_tuya_status(
                     thermo_id, 
-                    device_type="thermostat", 
-                    include_battery=True
+                    "thermostat"
                 ) if thermo_id else (False, "", None, None)
 
                 # Hjälpfunktion för att formatera batteritext med ikon
@@ -639,15 +653,23 @@ with tab_settings:
     st.divider()
     st.subheader("🏠 Husets inställningar & Paus")
     
-    paused_state = st.checkbox(
-        "Pausa huset helt (hoppa över optimering, AI och styrning)", 
-        value=current_house.get("paused", False), 
-        key=f"pause_house_{current_house.get('name')}"
-    )
-    if paused_state != current_house.get("paused", False):
-        current_house["paused"] = paused_state
-        save_config(config)
-        st.cache_data.clear()
+    if current_house and selected_house_key:
+        pause_key_settings = f"pause_house_{selected_house_key}"
+        pause_key_admin = f"admin_pause_{selected_house_key}"
+
+        paused_state = st.checkbox(
+            "Pausa huset helt (hoppa över optimering, AI och styrning)", 
+            value=current_house.get("paused", False), 
+            key=pause_key_settings
+        )
+        if paused_state != current_house.get("paused", False):
+            current_house["paused"] = paused_state
+            if pause_key_admin in st.session_state:
+                st.session_state[pause_key_admin] = paused_state
+            save_config(config)
+            st.cache_data.clear()
+            time.sleep(0.5)
+            st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     new_h_pw_input = st.text_input("Nytt lösenord för huset", type="password")
@@ -655,6 +677,7 @@ with tab_settings:
         if new_h_pw_input:
             current_house["password"] = new_h_pw_input
             save_config(config)
+            st.cache_data.clear()
             st.success("Lösenordet har uppdaterats!")
 
 # --- TAB 3: SCHEMA & PRISER ---
@@ -698,7 +721,7 @@ with tab_sched:
                 temp_96.append(temp_96[-1] if temp_96 else 0.0)
 
             if not is_tomorrow:
-                schedule = current_house.get("daily_schedule", [True]*96)
+                schedule = current_house.get("daily_schedule", [False]*96)
             else:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
@@ -715,6 +738,7 @@ with tab_sched:
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
                     save_config(config)
+                    st.cache_data.clear()
 
             times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
             times_extended = times + ["24:00"]
@@ -756,6 +780,7 @@ if is_admin and tab_admin:
         if st.button("💾 Uppdatera Admin-lösenord"):
             config["admin_password"] = admin_pw_input
             save_config(config)
+            st.cache_data.clear()
             st.success("Admin-lösenordet har uppdaterats!")
 
         st.divider()
@@ -770,6 +795,7 @@ if is_admin and tab_admin:
                 if new_h_pw != h_v.get("password"):
                     h_v["password"] = new_h_pw
                     save_config(config)
+                    st.cache_data.clear()
                     st.success(f"Lösenord för {h_v.get('name')} sparades!")
             with col_z:
                 curr_z = h_v.get("zone", "SE2")
@@ -780,12 +806,18 @@ if is_admin and tab_admin:
                     save_config(config)
                     st.cache_data.clear()
                     st.success(f"Elområde ändrat till {new_h_zone}!")
+                    time.sleep(0.5)
                     st.rerun()
             with col_c:
                 admin_paused = st.checkbox("Pausat", value=h_v.get("paused", False), key=f"admin_pause_{h_k}")
                 if admin_paused != h_v.get("paused", False):
                     h_v["paused"] = admin_paused
+                    settings_key = f"pause_house_{h_k}"
+                    if settings_key in st.session_state:
+                        st.session_state[settings_key] = admin_paused
                     save_config(config)
+                    st.cache_data.clear()
+                    time.sleep(0.5)
                     st.rerun()
 
         st.divider()
@@ -811,7 +843,9 @@ if is_admin and tab_admin:
                     "devices": []
                 }
                 save_config(config)
+                st.cache_data.clear()
                 st.success(f"Huset '{new_h_name}' har skapats!")
+                time.sleep(0.5)
                 st.rerun()
 
         st.divider()
@@ -835,7 +869,9 @@ if is_admin and tab_admin:
                         new_dev.update({"target_temp_high": 10.0, "target_temp_low": 6.0})
                     current_house.setdefault("devices", []).append(new_dev)
                     save_config(config)
+                    st.cache_data.clear()
                     st.success(f"Enhet '{dev_name}' tillagd!")
+                    time.sleep(0.5)
                     st.rerun()
 
         st.divider()
@@ -889,6 +925,7 @@ if is_admin and tab_admin:
                             save_config(config)
                             st.cache_data.clear()
                             st.success(f"Termometer kopplad till '{selected_dev.get('name')}'!")
+                            time.sleep(0.5)
                             st.rerun()
             else:
                 st.info("Det finns inga switch-enheter inlagda i det här huset än. Lägg till en enhet i sektionen ovanför först.")

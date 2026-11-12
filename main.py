@@ -473,6 +473,21 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch", include_
                 apiSecret=TUYA_API_SECRET,
                 devId=device_id
             )
+            
+            # 1. Kontrollera om enheten faktiskt är ONLINE i Tuya Cloud (inte bara cachad status)
+            try:
+                dev_info = cloud.cloudrequest(f"/v1.0/devices/{device_id}")
+                if isinstance(dev_info, dict) and dev_info.get("success") and isinstance(dev_info.get("result"), dict):
+                    is_online = dev_info["result"].get("online", True)
+                    if not is_online:
+                        print(f"[TUYA OFFLINE] Enhet {device_id} rapporterar online=False i Tuya Cloud!")
+                        if include_battery:
+                            return False, "OFFLINE", None, None
+                        return False, "OFFLINE", None
+            except Exception as e_info:
+                print(f"[TUYA INFO WARN] Kunde inte verifiera online-flagga för {device_id}: {e_info}")
+
+            # 2. Hämta datapunkter (temperatur, switch-läge, batteri)
             status_data = cloud.getstatus(device_id)
             print(f"[TUYA RAW RESPONSE] {device_id}: {status_data}")
 
@@ -490,7 +505,6 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch", include_
                         code = item.get("code", "").lower()
                         val = item.get("value")
 
-                        # Fånga batterinivå (oavsett enhetstyp)
                         BATTERY_CODES = ["va_battery", "battery_percentage", "battery_value", "battery", "residual_electricity"]
                         if code in BATTERY_CODES:
                             try:
@@ -579,6 +593,8 @@ def generate_daily_schedule(
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
     # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING (GLIDANDE FÖNSTER) ---
+
+    is_flat_fallback = (len(set(prices_96)) <= 1)
     costs = []
     for i in range(96):
         price = prices_96[i]
@@ -770,8 +786,37 @@ def main():
                     else:
                         needs_ai_update = True
 
+                # MIDNATTS-RULLNING: Om vi klivit in i ett nytt dygn och redan har morgondagens schema redo
+                if active_schedule_date != today_str and tomorrow_schedule_date == today_str:
+                    if tomorrow_schedule and len(tomorrow_schedule) == 96:
+                        print(f"[MIDNIGHT ROLLOVER] Rullar över förberäknat schema för {today_str} ({house_data.get('name')})")
+                        daily_schedule = tomorrow_schedule
+                        active_schedule_date = today_str
+                        house_data["daily_schedule"] = daily_schedule
+                        house_data["schedule_date"] = today_str
+                        if house_data.get("tomorrow_ai_reasoning"):
+                            house_data["ai_latest_reasoning"] = house_data.get("tomorrow_ai_reasoning")
+                        house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                        config_updated = True
+                        needs_ai_update = False        
+
                 req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
                 max_off_h = 4 if (sum(temp_forecast) / len(temp_forecast) if temp_forecast else current_temp) >= 0 else 2
+                
+                # Om vi har passerat midnatt och redan har ett färdigt morgondagsschema för detta datum:
+                # Rulla över det direkt som dagens schema (och spara som omedelbar bas/fallback)!
+                if active_schedule_date != today_str and tomorrow_schedule_date == today_str:
+                    if tomorrow_schedule and len(tomorrow_schedule) == 96:
+                        print(f"[MIDNIGHT ROLLOVER] Använder förberäknat schema för {today_str} ({house_data.get('name')})")
+                        daily_schedule = tomorrow_schedule
+                        active_schedule_date = today_str
+                        house_data["daily_schedule"] = daily_schedule
+                        house_data["schedule_date"] = today_str
+                        if house_data.get("tomorrow_ai_reasoning"):
+                            house_data["ai_latest_reasoning"] = house_data.get("tomorrow_ai_reasoning")
+                        house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
+                        config_updated = True
+                        needs_ai_update = False
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
@@ -896,8 +941,20 @@ def main():
                     thermo_active = False
 
                     if thermo_id:
-                        thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat", include_battery=False)
-
+                        thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat")
+                        
+                        # Säkerhetsvakt mot "frusen" batteritermometer (samma värde > 4 timmar trots värme PÅ)
+                        if thermo_active and measured_room_temp is not None and history:
+                            dev_hist = [
+                                h for h in history 
+                                if h.get("house") == house_data.get("name") and h.get("device") == dev_name
+                            ][-16:]
+                            if len(dev_hist) >= 16:
+                                recent_temps = [h.get("room_temp") for h in dev_hist]
+                                recent_on = sum(1 for h in dev_hist if h.get("status") == "ON")
+                                if all(t == round(measured_room_temp, 1) for t in recent_temps) and recent_on >= 8:
+                                    print(f"[THERMO STUCK WARN] Givare för {dev_name} har legat låst på {measured_room_temp}C i >4h trots drift. Ignorerar givare!")
+                                    thermo_active = False
                     if dev_type == "thermostat":
                         t_high = float(dev.get("target_temp_high", 10.0))
                         t_low = float(dev.get("target_temp_low", 6.0))
