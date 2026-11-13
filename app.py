@@ -157,7 +157,7 @@ with st.sidebar:
     if is_admin:
         st.write("### ⚡ Admin-verktyg")
         if st.button("🚀 Forcera AI-omräkning", type="primary"):
-            with st.spinner("Beräknar om scheman för idag och imorgon..."):
+            with st.spinner("Beräknar om scheman och hämtar ny väderdata för idag och imorgon..."):
                 now = datetime.now(sweden_tz)
                 today_str = now.strftime("%Y-%m-%d")
                 tomorrow_dt = now + timedelta(days=1)
@@ -208,11 +208,13 @@ with st.sidebar:
                             max_consecutive_off_hours=ai_res_today["max_consecutive_off_hours"]
                         )
 
-                        # Skriv över dagens schema först när vi har ett giltigt resultat (96 kvartar)
+                        # Skriv över dagens schema och spara väderprognos i Gist
                         if sched_today and len(sched_today) == 96:
                             h_data.update({
                                 "schedule_date": today_str, 
                                 "daily_schedule": sched_today, 
+                                "last_outside_temp": round(curr_temp, 1),
+                                "temp_forecast_today": forecast_today,
                                 "ai_latest_reasoning": ai_res_today["motivering"], 
                                 "last_ai_update": now.strftime("%Y-%m-%d %H:%M"),
                                 "last_ai_attempt": now.strftime("%Y-%m-%d %H:%M")
@@ -247,11 +249,12 @@ with st.sidebar:
                                 max_consecutive_off_hours=ai_res_tom["max_consecutive_off_hours"]
                             )
 
-                            # Skriv över morgondagens schema först när vi har ett giltigt resultat
+                            # Skriv över morgondagens schema och spara prognos i Gist
                             if sched_tom and len(sched_tom) == 96:
                                 h_data.update({
                                     "tomorrow_schedule_date": tomorrow_str,
                                     "tomorrow_schedule": sched_tom,
+                                    "tomorrow_temp_forecast": forecast_tom,
                                     "tomorrow_ai_reasoning": ai_res_tom["motivering"]
                                 })
                                 any_updated = True
@@ -262,7 +265,7 @@ with st.sidebar:
                 if any_updated:
                     save_config(config)
                     st.cache_data.clear()
-                    st.success("Nya PuLP-scheman (idag & imorgon) beräknade och sparade!")
+                    st.success("Nya PuLP-scheman och väderprognoser (idag & imorgon) beräknade och sparade!")
                     time.sleep(1)
                     st.rerun()
 
@@ -281,7 +284,13 @@ else:
     tab_dash, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- HJÄLPFUNKTION FÖR SÄKER TUYA-STATUS (3 ELLER 4 RETURVÄRDEN) ---
+# --- CACHADE HJÄLPFUNKTIONER FÖR SNABB SIDLADDNING ---
+@st.cache_data(ttl=3600)
+def cached_nordpool_price(zone: str, date_str: str):
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=sweden_tz)
+    return get_nordpool_price(zone=zone, target_date=dt)
+
+@st.cache_data(ttl=30)
 def safe_tuya_status(d_id, d_type):
     if not d_id:
         return False, "Ej konfigurerad", None, None
@@ -450,11 +459,23 @@ with tab_dash:
 
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
-    outside_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56)) if current_house else 0.0
-    
     now = datetime.now(sweden_tz)
+    today_str = now.strftime("%Y-%m-%d")
     house_zone = current_house.get("zone", "SE2") if current_house else "SE2"
-    today_prices = get_nordpool_price(zone=house_zone, target_date=now)
+    today_prices = cached_nordpool_price(house_zone, today_str)
+    
+    # Läs senast sparad utetemperatur direkt från Gist (eller historiken) utan att anropa externt API
+    outside_temp = current_house.get("last_outside_temp") if current_house else None
+    if outside_temp is None and history and current_house:
+        for h_item in reversed(history):
+            if h_item.get("house") == current_house.get("name") and h_item.get("temp") is not None:
+                outside_temp = float(h_item.get("temp"))
+                break
+    if outside_temp is None and current_house:
+        tf_saved = current_house.get("temp_forecast_today")
+        outside_temp = float(tf_saved[now.hour]) if (tf_saved and len(tf_saved) == 24) else 0.0
+    elif outside_temp is None:
+        outside_temp = 0.0
     
     avg_day_price = 0.0
     active_saving_pct = 0.0
@@ -485,11 +506,11 @@ with tab_dash:
     
     if current_house and today_prices and len(today_prices) == 96:
         schedule_today = current_house.get("daily_schedule", [False]*96)
-        temp_forecast_today = get_hourly_temp_forecast(
-            lat=current_house.get("lat", 63.25), 
-            lon=current_house.get("lon", 14.56), 
-            target_date=now
-        )
+        
+        # Läs sparad 24h-prognos direkt från Gist (inga externa API-anrop vid sidladdning/husbyte)
+        temp_forecast_today = current_house.get("temp_forecast_today")
+        if not temp_forecast_today or len(temp_forecast_today) < 24:
+            temp_forecast_today = [outside_temp] * 24
         
         temp_96_today = []
         for t_val in temp_forecast_today:
@@ -508,7 +529,6 @@ with tab_dash:
         if history and current_house and current_device:
             df_h = pd.DataFrame(history)
             if 'house' in df_h.columns and 'device' in df_h.columns:
-                today_str = now.strftime("%Y-%m-%d")
                 device_history_df = df_h[(df_h['house'] == current_house.get('name')) & 
                                          (df_h['device'] == current_device.get('name')) & 
                                          (df_h['timestamp'].str.startswith(today_str))]
@@ -694,6 +714,7 @@ with tab_sched:
         selected_day = st.radio("Välj dag att granska:", [f"Idag ({today_str})", f"Imorgon ({tomorrow_str})"], horizontal=True)
         is_tomorrow = "Imorgon" in selected_day
         target_dt = now if not is_tomorrow else tomorrow_dt
+        target_date_str = today_str if not is_tomorrow else tomorrow_str
         
         if current_house:
             if not is_tomorrow and current_house.get("ai_latest_reasoning"):
@@ -702,7 +723,7 @@ with tab_sched:
                 st.info(f"🤖 **AI-Strategens analys (Imorgon):** {current_house.get('tomorrow_ai_reasoning')}")
         
         house_zone = current_house.get("zone", "SE2")
-        prices = get_nordpool_price(zone=house_zone, target_date=target_dt)
+        prices = cached_nordpool_price(house_zone, target_date_str)
         
         prices_has_arrived = True
         if is_tomorrow:
@@ -712,7 +733,15 @@ with tab_sched:
         if is_tomorrow and not prices_has_arrived:
             st.info(f"⏳ **Morgondagens elprisprognos har inte publicerats ännu.**\n\nNordpool brukar publicera morgondagens priser dagligen runt kl. **13:00–14:00**. Vänligen återkom efter det för att se schemat för {tomorrow_str}.")
         else:
-            temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=target_dt)
+            # Läs sparad prognos direkt från Gist
+            if not is_tomorrow:
+                temp_forecast = current_house.get("temp_forecast_today")
+            else:
+                temp_forecast = current_house.get("tomorrow_temp_forecast")
+
+            if not temp_forecast or len(temp_forecast) < 24:
+                fallback_t = current_house.get("last_outside_temp", 0.0) if current_house else 0.0
+                temp_forecast = [fallback_t if fallback_t is not None else 0.0] * 24
             
             temp_96 = []
             for t_val in temp_forecast:
@@ -725,7 +754,10 @@ with tab_sched:
             else:
                 schedule = current_house.get("tomorrow_schedule")
                 if not schedule or current_house.get("tomorrow_schedule_date") != tomorrow_str:
-                    curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+                    curr_temp = current_house.get("last_outside_temp")
+                    if curr_temp is None:
+                        curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
+                    temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=tomorrow_dt)
                     req_runtime_tom = calculate_required_runtime(temp_forecast, current_temp=curr_temp)
                     schedule = generate_daily_schedule(
                         prices, 
@@ -737,6 +769,7 @@ with tab_sched:
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
+                    current_house["tomorrow_temp_forecast"] = temp_forecast
                     save_config(config)
                     st.cache_data.clear()
 

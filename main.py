@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import pulp
 import requests
 import time
@@ -138,67 +139,148 @@ def get_nordpool_price(zone="SE2", target_date=None):
     print("[ERROR] Kunde inte hämta elpriser efter flera försök. Använder fallback.")
     return [50.0] * 96
 
-# --- TEMPERATUR PROGNOS (OPEN-METEO) ---
+# --- TEMPERATUR PROGNOS (SMHI -> MET NORWAY / YR -> OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
         target_date = datetime.now(sweden_tz)
     
     target_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date, "strftime") else str(target_date)
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
-    
-    for attempt in range(2):
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if "hourly" in data and "time" in data["hourly"] and "temperature_2m" in data["hourly"]:
-                    times = data["hourly"]["time"]
-                    temps = data["hourly"]["temperature_2m"]
-                    
-                    day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
-                    
-                    if len(day_temps) == 24:
-                        return day_temps
-                    elif len(day_temps) > 0:
-                        while len(day_temps) < 24:
-                            day_temps.append(day_temps[-1])
-                        return day_temps[:24]
-            break
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} misslyckades för Open-Meteo prognos: {e}")
+    headers_ua = {"User-Agent": "ElstyrningHomeAutomation/2.0 (kontakt@elstyrning.se)"}
+
+    # 1. Primär källa: SMHI Öppna Data (PMP3g - mycket snabb och stabil i Sverige)
+    try:
+        smhi_url = f"https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/{round(float(lon), 4)}/lat/{round(float(lat), 4)}/data.json"
+        res = requests.get(smhi_url, headers=headers_ua, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            hourly_map = {}
+            for entry in data.get("timeSeries", []):
+                valid_time_utc = datetime.fromisoformat(entry["validTime"].replace("Z", "+00:00"))
+                valid_time_swe = valid_time_utc.astimezone(sweden_tz)
+                if valid_time_swe.strftime("%Y-%m-%d") == target_str:
+                    for param in entry.get("parameters", []):
+                        if param.get("name") == "t":
+                            hourly_map[valid_time_swe.hour] = float(param["values"][0])
+            
+            if hourly_map:
+                first_known = hourly_map[min(hourly_map.keys())]
+                result = []
+                last_val = first_known
+                for h in range(24):
+                    if h in hourly_map:
+                        last_val = hourly_map[h]
+                    result.append(last_val)
+                print(f"[WEATHER] Hämtade 24h prognos från SMHI för {target_str}")
+                return result
+    except Exception as e:
+        print(f"[WARNING] SMHI prognos misslyckades: {e}")
+
+    # 2. Sekundär källa: MET Norway / Yr.no
+    try:
+        yr_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={round(float(lat), 4)}&lon={round(float(lon), 4)}"
+        res = requests.get(yr_url, headers=headers_ua, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            hourly_map = {}
+            for entry in data.get("properties", {}).get("timeseries", []):
+                valid_time_utc = datetime.fromisoformat(entry["time"].replace("Z", "+00:00"))
+                valid_time_swe = valid_time_utc.astimezone(sweden_tz)
+                if valid_time_swe.strftime("%Y-%m-%d") == target_str:
+                    temp_val = entry["data"]["instant"]["details"]["air_temperature"]
+                    hourly_map[valid_time_swe.hour] = float(temp_val)
+
+            if hourly_map:
+                first_known = hourly_map[min(hourly_map.keys())]
+                result = []
+                last_val = first_known
+                for h in range(24):
+                    if h in hourly_map:
+                        last_val = hourly_map[h]
+                    result.append(last_val)
+                print(f"[WEATHER] Hämtade 24h prognos från MET Norway (Yr) för {target_str}")
+                return result
+    except Exception as e:
+        print(f"[WARNING] MET Norway prognos misslyckades: {e}")
+
+    # 3. Sista reserv: Open-Meteo (med kortare timeout så den inte låser körningen)
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&timezone=Europe%2FStockholm&forecast_days=3"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if "hourly" in data and "time" in data["hourly"] and "temperature_2m" in data["hourly"]:
+                times = data["hourly"]["time"]
+                temps = data["hourly"]["temperature_2m"]
+                day_temps = [temp for t, temp in zip(times, temps) if t.startswith(target_str)]
+                if len(day_temps) == 24:
+                    return day_temps
+                elif len(day_temps) > 0:
+                    while len(day_temps) < 24:
+                        day_temps.append(day_temps[-1])
+                    return day_temps[:24]
+    except Exception as e:
+        print(f"[WARNING] Open-Meteo reservprognos misslyckades: {e}")
     
     return [5.0] * 24
 
-# --- TEMPERATUR.NU API ---
+# --- UTETEMPERATUR NU (TEMPERATUR.NU -> SMHI -> MET NORWAY -> OPEN-METEO) ---
 def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
-    url = f"https://www.temperatur.nu/jstemp.php?s={station}"
-    
-    for attempt in range(2):
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                text = res.text.strip()
-                try:
-                    data = res.json()
-                    if "temp" in data:
-                        return float(data["temp"])
-                except Exception:
-                    pass
-                
-                import re
-                numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
-                if numbers:
-                    val = float(numbers[0])
-                    if -40 <= val <= 40:
-                        return val
-            break
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu ({station}): {e}")
-    
+    headers_ua = {"User-Agent": "ElstyrningHomeAutomation/2.0 (kontakt@elstyrning.se)"}
+
+    # 1. Försök med Temperatur.nu
+    if station:
+        url = f"https://www.temperatur.nu/jstemp.php?s={station}"
+        for attempt in range(2):
+            try:
+                res = requests.get(url, timeout=5)
+                if res.status_code == 200:
+                    text = res.text.strip()
+                    try:
+                        data = res.json()
+                        if "temp" in data:
+                            return float(data["temp"])
+                    except Exception:
+                        pass
+                    
+                    import re
+                    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+                    if numbers:
+                        val = float(numbers[0])
+                        if -45 <= val <= 40:
+                            return val
+                break
+            except Exception as e:
+                print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu ({station}): {e}")
+
+    # 2. Fallback 1: SMHI PMP3g
+    try:
+        smhi_url = f"https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/{round(float(lon), 4)}/lat/{round(float(lat), 4)}/data.json"
+        res_smhi = requests.get(smhi_url, headers=headers_ua, timeout=5)
+        if res_smhi.status_code == 200:
+            ts = res_smhi.json().get("timeSeries", [])
+            if ts:
+                for param in ts[0].get("parameters", []):
+                    if param.get("name") == "t":
+                        return float(param["values"][0])
+    except Exception:
+        pass
+
+    # 3. Fallback 2: MET Norway (Yr.no)
+    try:
+        yr_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={round(float(lat), 4)}&lon={round(float(lon), 4)}"
+        res_yr = requests.get(yr_url, headers=headers_ua, timeout=5)
+        if res_yr.status_code == 200:
+            ts = res_yr.json().get("properties", {}).get("timeseries", [])
+            if ts:
+                return float(ts[0]["data"]["instant"]["details"]["air_temperature"])
+    except Exception:
+        pass
+
+    # 4. Fallback 3: Open-Meteo
     try:
         url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-        res_om = requests.get(url_om, timeout=8)
+        res_om = requests.get(url_om, timeout=4)
         if res_om.status_code == 200:
             return float(res_om.json()["current"]["temperature_2m"])
     except Exception:
@@ -219,7 +301,7 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
 
     if hours_below_minus20 >= 8:
         return 20
-    if hours_below_minus15 >= 12:
+    elif hours_below_minus15 >= 12:
         return 16
     elif hours_below_minus5 >= 8:
         return 12
@@ -593,28 +675,32 @@ def generate_daily_schedule(
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
     # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING (GLIDANDE FÖNSTER) ---
-
     is_flat_fallback = (len(set(prices_96)) <= 1)
     costs = []
     for i in range(96):
         price = prices_96[i]
         
-        # Beräkna lokalt snittpris för de närmaste 2 timmarna före och efter (±8 kvartar)
-        w_start = max(0, i - 8)
-        w_end = min(96, i + 9)
-        window_prices = prices_96[w_start:w_end]
-        local_avg = sum(window_prices) / len(window_prices) if window_prices else price
-        
-        # Jämför kvartens pris med sitt lokala snitt
-        spike_ratio = price / max(1.0, local_avg)
-        
-        # Om kvarten är en lokal pristopp (> 12% dyrare än omgivande tid) får den ett exponentiellt straff!
-        if spike_ratio > 1.12:
-            effective_cost = price * (spike_ratio ** 3) * 2.5
-        elif price_cap is not None and price > price_cap:
-            effective_cost = price * 5.0
+        if is_flat_fallback:
+            # Om reservpriser (50 öre platt) används: lägg på en svag sinusvåg 
+            # så att PuLP fördelar drifttiden jämnt över hela dygnet
+            effective_cost = price + math.sin(i * math.pi / 6.0) * 0.5
         else:
-            effective_cost = price
+            # Beräkna lokalt snittpris för de närmaste 2 timmarna före och efter (±8 kvartar)
+            w_start = max(0, i - 8)
+            w_end = min(96, i + 9)
+            window_prices = prices_96[w_start:w_end]
+            local_avg = sum(window_prices) / len(window_prices) if window_prices else price
+            
+            # Jämför kvartens pris med sitt lokala snitt
+            spike_ratio = price / max(1.0, local_avg)
+            
+            # Om kvarten är en lokal pristopp (> 12% dyrare än omgivande tid) får den ett exponentiellt straff!
+            if spike_ratio > 1.12:
+                effective_cost = price * (spike_ratio ** 3) * 2.5
+            elif price_cap is not None and price > price_cap:
+                effective_cost = price * 5.0
+            else:
+                effective_cost = price
             
         costs.append(x[i] * effective_cost)
 
@@ -627,6 +713,7 @@ def generate_daily_schedule(
     # Förhindra att all värme hamnar på ena dygnshalvan vid kallfront/prisfall
     prob += pulp.lpSum([x[i] for i in range(0, 48)]) >= int(required_blocks * 0.35)
     prob += pulp.lpSum([x[i] for i in range(48, 96)]) >= int(required_blocks * 0.35)
+    
     # 2. Max AV-tid
     max_off_slots = max(4, max_consecutive_off_hours * 4)
     for i in range(96 - max_off_slots):
@@ -689,7 +776,6 @@ def main():
             except Exception:
                 pass
 
-        
         quarter_index = (now.hour * 4) + (now.minute // 15)
        
         if "houses" not in config:
@@ -699,6 +785,7 @@ def main():
                         "name": "Huvudhuset",
                         "lat": 63.25,
                         "lon": 14.56,
+                        "zone": "SE2",
                         "temperatur_nu_station": os.getenv("TEMPERATUR_NU_STATION", "ostersund"),
                         "schedule_date": config.get("schedule_date"),
                         "daily_schedule": config.get("daily_schedule"),
@@ -740,7 +827,9 @@ def main():
                 current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
                 
                 current_temp = get_outside_temp(station=station, lat=lat, lon=lon)
-                temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now)
+                if house_data.get("last_outside_temp") != round(current_temp, 1):
+                    house_data["last_outside_temp"] = round(current_temp, 1)
+                    config_updated = True
 
                 devices = house_data.get("devices", [])
                 if not devices:
@@ -796,27 +885,21 @@ def main():
                         house_data["schedule_date"] = today_str
                         if house_data.get("tomorrow_ai_reasoning"):
                             house_data["ai_latest_reasoning"] = house_data.get("tomorrow_ai_reasoning")
-                        house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
-                        config_updated = True
-                        needs_ai_update = False        
-
-                req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
-                max_off_h = 4 if (sum(temp_forecast) / len(temp_forecast) if temp_forecast else current_temp) >= 0 else 2
-                
-                # Om vi har passerat midnatt och redan har ett färdigt morgondagsschema för detta datum:
-                # Rulla över det direkt som dagens schema (och spara som omedelbar bas/fallback)!
-                if active_schedule_date != today_str and tomorrow_schedule_date == today_str:
-                    if tomorrow_schedule and len(tomorrow_schedule) == 96:
-                        print(f"[MIDNIGHT ROLLOVER] Använder förberäknat schema för {today_str} ({house_data.get('name')})")
-                        daily_schedule = tomorrow_schedule
-                        active_schedule_date = today_str
-                        house_data["daily_schedule"] = daily_schedule
-                        house_data["schedule_date"] = today_str
-                        if house_data.get("tomorrow_ai_reasoning"):
-                            house_data["ai_latest_reasoning"] = house_data.get("tomorrow_ai_reasoning")
+                        if house_data.get("tomorrow_temp_forecast"):
+                            house_data["temp_forecast_today"] = house_data.get("tomorrow_temp_forecast")
                         house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
                         config_updated = True
                         needs_ai_update = False
+
+                # Hämta bara ny 24h-prognos vid omräkning (2 ggr/dag) eller om den saknas i Gist
+                temp_forecast = house_data.get("temp_forecast_today")
+                if needs_ai_update or not temp_forecast or len(temp_forecast) < 24:
+                    temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now)
+                    house_data["temp_forecast_today"] = temp_forecast
+                    config_updated = True
+
+                req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
+                max_off_h = 4 if (sum(temp_forecast) / len(temp_forecast) if temp_forecast else current_temp) >= 0 else 2
 
                 if needs_ai_update:
                     print(f"[AI UPDATE] Beräknar om för hus: {house_data.get('name', house_key)}...")
@@ -878,10 +961,10 @@ def main():
                     if now.hour >= 14 and tomorrow_schedule_date != tomorrow_str:
                         tomorrow_dt = now + timedelta(days=1)
                         prices_tomorrow = get_nordpool_price(zone=zone, target_date=tomorrow_dt)
-                        temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
-                        req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
 
                         if len(set(prices_tomorrow)) > 1: 
+                            temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
+                            req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
                             time.sleep(5 + random.uniform(0, 3))
                             ai_result_tom = get_ai_optimized_parameters(
                                 prices_tomorrow, 
@@ -908,6 +991,7 @@ def main():
 
                             house_data["tomorrow_schedule_date"] = tomorrow_str
                             house_data["tomorrow_schedule"] = new_tomorrow_sched
+                            house_data["tomorrow_temp_forecast"] = temp_forecast_tom
                             house_data["tomorrow_ai_reasoning"] = reasoning_tom
                             config_updated = True
                 except Exception as e:
@@ -955,6 +1039,7 @@ def main():
                                 if all(t == round(measured_room_temp, 1) for t in recent_temps) and recent_on >= 8:
                                     print(f"[THERMO STUCK WARN] Givare för {dev_name} har legat låst på {measured_room_temp}C i >4h trots drift. Ignorerar givare!")
                                     thermo_active = False
+
                     if dev_type == "thermostat":
                         t_high = float(dev.get("target_temp_high", 10.0))
                         t_low = float(dev.get("target_temp_low", 6.0))
