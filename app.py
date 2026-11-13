@@ -428,7 +428,8 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
             anchor="x",
             overlaying="y",
             side="right",
-            showgrid=False
+            showgrid=False,
+            tickformat=".0f"
         ),
         yaxis3=dict(
             title="",
