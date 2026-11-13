@@ -831,19 +831,29 @@ if is_admin and tab_admin:
             st.success("Admin-lösenordet har uppdaterats!")
 
         st.divider()
-        st.write("### 🏠 Husinställningar, Elområde & Pausläge")
+        st.write("### 🏠 Husinställningar, Ort, Elområde & Pausläge")
         zones_list = ["SE1", "SE2", "SE3", "SE4"]
         for h_k, h_v in houses.items():
-            col_a, col_b, col_z, col_c = st.columns([2, 2, 1.5, 1])
+            col_a, col_b, col_ort, col_z, col_c = st.columns([1.8, 1.8, 1.5, 1.2, 1])
             with col_a:
                 st.write(f"**{h_v.get('name', h_k)}** {'⏸️' if h_v.get('paused') else ''}")
             with col_b:
-                new_h_pw = st.text_input(f"Lösenord för {h_v.get('name')}", value=h_v.get("password", "hus123"), key=f"pw_{h_k}")
+                new_h_pw = st.text_input(f"Lösenord ({h_v.get('name')})", value=h_v.get("password", "hus123"), key=f"pw_{h_k}")
                 if new_h_pw != h_v.get("password"):
                     h_v["password"] = new_h_pw
                     save_config(config)
                     load_gist_data.clear()
                     st.success(f"Lösenord för {h_v.get('name')} sparades!")
+            with col_ort:
+                curr_ort = h_v.get("temperatur_nu_station", "Östersund")
+                new_h_ort = st.text_input(f"Ort ({h_v.get('name')})", value=curr_ort, key=f"ort_{h_k}")
+                if new_h_ort.strip() != curr_ort:
+                    h_v["temperatur_nu_station"] = new_h_ort.strip()
+                    save_config(config)
+                    load_gist_data.clear()
+                    st.success(f"Ort ändrad till {new_h_ort.strip()}!")
+                    time.sleep(0.5)
+                    st.rerun()
             with col_z:
                 curr_z = h_v.get("zone", "SE2")
                 z_idx = zones_list.index(curr_z) if curr_z in zones_list else 1
@@ -872,9 +882,7 @@ if is_admin and tab_admin:
         new_h_id = st.text_input("Hus-ID (t.ex. 'stugan_2')")
         new_h_name = st.text_input("Husets Namn / Användarnamn")
         new_h_pw = st.text_input("Inledande lösenord", value="hus123")
-        new_h_lat = st.number_input("Latitud", value=63.30)
-        new_h_lon = st.number_input("Longitud", value=14.70)
-        new_h_stat = st.text_input("Temperatur.nu station", value="ronnofors")
+        new_h_stat = st.text_input("Ort (för väder & prognos, t.ex. 'Ås', 'Östersund', 'Rönnöfors')", value="Ås")
         new_h_zone = st.selectbox("Elområde", ["SE1", "SE2", "SE3", "SE4"], index=1)
 
         if st.button("Skapa Hus"):
@@ -882,16 +890,14 @@ if is_admin and tab_admin:
                 houses[new_h_id] = {
                     "name": new_h_name,
                     "password": new_h_pw,
-                    "lat": new_h_lat,
-                    "lon": new_h_lon,
-                    "temperatur_nu_station": new_h_stat,
+                    "temperatur_nu_station": new_h_stat.strip(),
                     "zone": new_h_zone,
                     "paused": False,
                     "devices": []
                 }
                 save_config(config)
                 load_gist_data.clear()
-                st.success(f"Huset '{new_h_name}' har skapats!")
+                st.success(f"Huset '{new_h_name}' ({new_h_stat}) har skapats!")
                 time.sleep(0.5)
                 st.rerun()
 

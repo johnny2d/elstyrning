@@ -164,6 +164,49 @@ def get_nordpool_price(zone="SE2", target_date=None):
     print("[INFO] Kunde inte hämta elpriser för datumet. Använder fallback.")
     return [50.0] * 96
 
+
+# Inbyggd direktuppslagning för vanliga orter + cache för automatisk ortsuppslagning
+_LOCATION_CACHE = {
+    "ostersund": (63.1792, 14.6357),
+    "östersund": (63.1792, 14.6357),
+    "as": (63.2486, 14.5639),
+    "ås": (63.2486, 14.5639),
+    "krokom": (63.3260, 14.4485),
+    "ronnofors": (63.6500, 13.8667),
+    "rönnöfors": (63.6500, 13.8667),
+    "offerdal": (63.4667, 14.0167),
+    "vejmon": (63.5350, 14.1200),
+    "alsen": (63.3833, 13.9333),
+    "are": (63.3988, 13.0815),
+    "åre": (63.3988, 13.0815),
+    "frosön": (63.1930, 14.5220),
+    "frösön": (63.1930, 14.5220),
+}
+
+def resolve_location(place_name: str, fallback_lat=63.25, fallback_lon=14.56):
+    if not place_name:
+        return fallback_lat, fallback_lon
+    
+    clean_name = str(place_name).strip().lower()
+    if clean_name in _LOCATION_CACHE:
+        return _LOCATION_CACHE[clean_name]
+
+    # Om du skriver in någon helt ny ort i Sverige slår den upp orten automatiskt 1 gång
+    try:
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(clean_name)}&count=1&language=sv&format=json"
+        res = requests.get(geo_url, timeout=4)
+        if res.status_code == 200:
+            results = res.json().get("results", [])
+            if results:
+                lat_val = round(float(results[0]["latitude"]), 4)
+                lon_val = round(float(results[0]["longitude"]), 4)
+                _LOCATION_CACHE[clean_name] = (lat_val, lon_val)
+                print(f"[GEO] Hittade ort '{place_name}' -> ({lat_val}, {lon_val})")
+                return lat_val, lon_val
+    except Exception as e:
+        print(f"[GEO WARN] Kunde inte slå upp ort '{place_name}': {e}")
+
+    return fallback_lat, fallback_lon
 # --- TEMPERATUR PROGNOS (SMHI -> MET NORWAY / YR -> OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
@@ -251,34 +294,10 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
 
 # --- UTETEMPERATUR NU (TEMPERATUR.NU -> SMHI -> MET NORWAY -> OPEN-METEO) ---
 def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
+    lat, lon = resolve_location(station, lat, lon)
     headers_ua = {"User-Agent": "ElstyrningHomeAutomation/2.0 (kontakt@elstyrning.se)"}
 
-    # 1. Försök med Temperatur.nu
-    if station:
-        url = f"https://www.temperatur.nu/jstemp.php?s={station}"
-        for attempt in range(2):
-            try:
-                res = requests.get(url, timeout=5)
-                if res.status_code == 200:
-                    text = res.text.strip()
-                    try:
-                        data = res.json()
-                        if "temp" in data:
-                            return float(data["temp"])
-                    except Exception:
-                        pass
-                    
-                    import re
-                    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
-                    if numbers:
-                        val = float(numbers[0])
-                        if -45 <= val <= 40:
-                            return val
-                break
-            except Exception as e:
-                print(f"[WARNING] Försök {attempt+1} misslyckades för temperatur.nu ({station}): {e}")
-
-    # 2. Fallback 1: SMHI PMP3g
+    # 1. Primär källa: SMHI PMP3g för vald ort
     try:
         smhi_url = f"https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/{round(float(lon), 4)}/lat/{round(float(lat), 4)}/data.json"
         res_smhi = requests.get(smhi_url, headers=headers_ua, timeout=5)
@@ -287,31 +306,26 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
             if ts:
                 for param in ts[0].get("parameters", []):
                     if param.get("name") == "t":
-                        return float(param["values"][0])
-    except Exception:
-        pass
+                        val = float(param["values"][0])
+                        print(f"[TEMP] Utetemperatur från SMHI för '{station}': {val}°C")
+                        return val
+    except Exception as e:
+        print(f"[WARNING] SMHI utetemp misslyckades för '{station}': {e}")
 
-    # 3. Fallback 2: MET Norway (Yr.no)
+    # 2. Sekundär källa: MET Norway (Yr.no) för vald ort
     try:
         yr_url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={round(float(lat), 4)}&lon={round(float(lon), 4)}"
         res_yr = requests.get(yr_url, headers=headers_ua, timeout=5)
         if res_yr.status_code == 200:
             ts = res_yr.json().get("properties", {}).get("timeseries", [])
             if ts:
-                return float(ts[0]["data"]["instant"]["details"]["air_temperature"])
-    except Exception:
-        pass
+                val = float(ts[0]["data"]["instant"]["details"]["air_temperature"])
+                print(f"[TEMP] Utetemperatur från MET Norway för '{station}': {val}°C")
+                return val
+    except Exception as e:
+        print(f"[WARNING] MET Norway utetemp misslyckades för '{station}': {e}")
 
-    # 4. Fallback 3: Open-Meteo
-    try:
-        url_om = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m"
-        res_om = requests.get(url_om, timeout=4)
-        if res_om.status_code == 200:
-            return float(res_om.json()["current"]["temperature_2m"])
-    except Exception:
-        pass
-
-    return 5.0
+    return 0.0
 
 # --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS (DETERMINISTISKT) ---
 def calculate_required_runtime(temp_forecast, current_temp=5.0):
