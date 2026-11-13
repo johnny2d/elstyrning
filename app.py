@@ -157,7 +157,7 @@ with st.sidebar:
     if is_admin:
         st.write("### ⚡ Admin-verktyg")
         if st.button("🚀 Forcera AI-omräkning", type="primary"):
-            with st.spinner("Beräknar om scheman och hämtar ny väderdata för idag och imorgon..."):
+            with st.spinner("Beräknar om scheman och hämtar ny väder- och prisdata för idag och imorgon..."):
                 now = datetime.now(sweden_tz)
                 today_str = now.strftime("%Y-%m-%d")
                 tomorrow_dt = now + timedelta(days=1)
@@ -171,8 +171,6 @@ with st.sidebar:
                     
                     h_name = h_data.get("name", h_key)
                     try:
-                        # Vi nollställer INTE befintliga scheman här. 
-                        # De ligger kvar som fallback tills nya beräkningar är 100% klara.
                         h_lat, h_lon = h_data.get("lat", 63.25), h_data.get("lon", 14.56)
                         h_zone = h_data.get("zone", "SE2")
                         h_station = h_data.get("temperatur_nu_station")
@@ -208,11 +206,12 @@ with st.sidebar:
                             max_consecutive_off_hours=ai_res_today["max_consecutive_off_hours"]
                         )
 
-                        # Skriv över dagens schema och spara väderprognos i Gist
+                        # Skriv över dagens schema och spara både priser och väderprognos i Gist
                         if sched_today and len(sched_today) == 96:
                             h_data.update({
                                 "schedule_date": today_str, 
                                 "daily_schedule": sched_today, 
+                                "prices_today": prices_today,
                                 "last_outside_temp": round(curr_temp, 1),
                                 "temp_forecast_today": forecast_today,
                                 "ai_latest_reasoning": ai_res_today["motivering"], 
@@ -249,11 +248,12 @@ with st.sidebar:
                                 max_consecutive_off_hours=ai_res_tom["max_consecutive_off_hours"]
                             )
 
-                            # Skriv över morgondagens schema och spara prognos i Gist
+                            # Skriv över morgondagens schema och spara både priser och prognos i Gist
                             if sched_tom and len(sched_tom) == 96:
                                 h_data.update({
                                     "tomorrow_schedule_date": tomorrow_str,
                                     "tomorrow_schedule": sched_tom,
+                                    "prices_tomorrow": prices_tom,
                                     "tomorrow_temp_forecast": forecast_tom,
                                     "tomorrow_ai_reasoning": ai_res_tom["motivering"]
                                 })
@@ -264,8 +264,8 @@ with st.sidebar:
 
                 if any_updated:
                     save_config(config)
-                    st.cache_data.clear()
-                    st.success("Nya PuLP-scheman och väderprognoser (idag & imorgon) beräknade och sparade!")
+                    load_gist_data.clear()
+                    st.success("Nya PuLP-scheman, priser och väderprognoser (idag & imorgon) beräknade och sparade!")
                     time.sleep(1)
                     st.rerun()
 
@@ -462,7 +462,11 @@ with tab_dash:
     now = datetime.now(sweden_tz)
     today_str = now.strftime("%Y-%m-%d")
     house_zone = current_house.get("zone", "SE2") if current_house else "SE2"
-    today_prices = cached_nordpool_price(house_zone, today_str)
+    
+    # Läs sparade priser direkt från Gist (eller ramminnes-cachen om nytt dygn/ny zon)
+    today_prices = current_house.get("prices_today") if (current_house and current_house.get("schedule_date") == today_str) else None
+    if not today_prices or len(today_prices) != 96:
+        today_prices = cached_nordpool_price(house_zone, today_str)
     
     # Läs senast sparad utetemperatur direkt från Gist (eller historiken) utan att anropa externt API
     outside_temp = current_house.get("last_outside_temp") if current_house else None
@@ -665,7 +669,7 @@ with tab_settings:
                     if force != "AUTO":
                         set_tuya_device(dev_id, switch_val, device_type="switch")
 
-            st.cache_data.clear()
+            load_gist_data.clear()
             st.success("Inställningarna sparades och skickades till enheten!")
             time.sleep(1)
             st.rerun()
@@ -687,7 +691,7 @@ with tab_settings:
             if pause_key_admin in st.session_state:
                 st.session_state[pause_key_admin] = paused_state
             save_config(config)
-            st.cache_data.clear()
+            load_gist_data.clear()
             time.sleep(0.5)
             st.rerun()
 
@@ -697,7 +701,7 @@ with tab_settings:
         if new_h_pw_input:
             current_house["password"] = new_h_pw_input
             save_config(config)
-            st.cache_data.clear()
+            load_gist_data.clear()
             st.success("Lösenordet har uppdaterats!")
 
 # --- TAB 3: SCHEMA & PRISER ---
@@ -723,7 +727,15 @@ with tab_sched:
                 st.info(f"🤖 **AI-Strategens analys (Imorgon):** {current_house.get('tomorrow_ai_reasoning')}")
         
         house_zone = current_house.get("zone", "SE2")
-        prices = cached_nordpool_price(house_zone, target_date_str)
+        
+        # Läs sparade priser direkt från Gist (eller hämta 1 gång via cachen om de saknas)
+        if not is_tomorrow:
+            prices = current_house.get("prices_today") if current_house.get("schedule_date") == today_str else None
+        else:
+            prices = current_house.get("prices_tomorrow") if current_house.get("tomorrow_schedule_date") == tomorrow_str else None
+            
+        if not prices or len(prices) != 96:
+            prices = cached_nordpool_price(house_zone, target_date_str)
         
         prices_has_arrived = True
         if is_tomorrow:
@@ -769,9 +781,10 @@ with tab_sched:
                     
                     current_house["tomorrow_schedule"] = schedule
                     current_house["tomorrow_schedule_date"] = tomorrow_str
+                    current_house["prices_tomorrow"] = prices
                     current_house["tomorrow_temp_forecast"] = temp_forecast
                     save_config(config)
-                    st.cache_data.clear()
+                    load_gist_data.clear()
 
             times = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 15, 30, 45]]
             times_extended = times + ["24:00"]
@@ -813,7 +826,7 @@ if is_admin and tab_admin:
         if st.button("💾 Uppdatera Admin-lösenord"):
             config["admin_password"] = admin_pw_input
             save_config(config)
-            st.cache_data.clear()
+            load_gist_data.clear()
             st.success("Admin-lösenordet har uppdaterats!")
 
         st.divider()
@@ -828,7 +841,7 @@ if is_admin and tab_admin:
                 if new_h_pw != h_v.get("password"):
                     h_v["password"] = new_h_pw
                     save_config(config)
-                    st.cache_data.clear()
+                    load_gist_data.clear()
                     st.success(f"Lösenord för {h_v.get('name')} sparades!")
             with col_z:
                 curr_z = h_v.get("zone", "SE2")
@@ -837,7 +850,7 @@ if is_admin and tab_admin:
                 if new_h_zone != curr_z:
                     h_v["zone"] = new_h_zone
                     save_config(config)
-                    st.cache_data.clear()
+                    load_gist_data.clear()
                     st.success(f"Elområde ändrat till {new_h_zone}!")
                     time.sleep(0.5)
                     st.rerun()
@@ -849,7 +862,7 @@ if is_admin and tab_admin:
                     if settings_key in st.session_state:
                         st.session_state[settings_key] = admin_paused
                     save_config(config)
-                    st.cache_data.clear()
+                    load_gist_data.clear()
                     time.sleep(0.5)
                     st.rerun()
 
@@ -876,7 +889,7 @@ if is_admin and tab_admin:
                     "devices": []
                 }
                 save_config(config)
-                st.cache_data.clear()
+                load_gist_data.clear()
                 st.success(f"Huset '{new_h_name}' har skapats!")
                 time.sleep(0.5)
                 st.rerun()
@@ -902,7 +915,7 @@ if is_admin and tab_admin:
                         new_dev.update({"target_temp_high": 10.0, "target_temp_low": 6.0})
                     current_house.setdefault("devices", []).append(new_dev)
                     save_config(config)
-                    st.cache_data.clear()
+                    load_gist_data.clear()
                     st.success(f"Enhet '{dev_name}' tillagd!")
                     time.sleep(0.5)
                     st.rerun()
@@ -956,7 +969,7 @@ if is_admin and tab_admin:
                             selected_dev["thermometer_device_id"] = new_thermo_id.strip()
                             selected_dev["target_room_temp"] = new_target_temp
                             save_config(config)
-                            st.cache_data.clear()
+                            load_gist_data.clear()
                             st.success(f"Termometer kopplad till '{selected_dev.get('name')}'!")
                             time.sleep(0.5)
                             st.rerun()

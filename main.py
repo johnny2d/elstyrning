@@ -31,6 +31,9 @@ TUYA_API_KEY = os.getenv("TUYA_API_KEY")
 TUYA_API_SECRET = os.getenv("TUYA_API_SECRET")
 TUYA_REGION = os.getenv("TUYA_REGION", "eu")
 
+# Global minnescache så att samma elområde + datum ALDRIG hämtas mer än 1 gång per process
+_PRICE_CACHE = {}
+
 # --- GIST-FUNKTIONER ---
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
@@ -98,7 +101,7 @@ def save_history(history_data):
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} - Fel vid sparande av history till Gist: {e}")
 
-# --- NORDPOOL API ---
+# --- NORDPOOL API (MED MINNESCACHE & SNABB RESERVTJÄNST) ---
 def get_nordpool_price(zone="SE2", target_date=None):
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
@@ -108,35 +111,57 @@ def get_nordpool_price(zone="SE2", target_date=None):
     month = f"{target_date.month:02d}"
     day = f"{target_date.day:02d}"
     zone_clean = zone.strip().upper()
+    date_str = f"{year}-{month}-{day}"
     
+    cache_key = (zone_clean, date_str)
+    if cache_key in _PRICE_CACHE:
+        return list(_PRICE_CACHE[cache_key])
+
+    headers_np = {"User-Agent": "ElstyrningHomeAutomation/2.0"}
+
+    # 1. Primär källa: ElprisetJustNu (Snabb timeout, inga 10s sovpauser)
     url = f"https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone_clean}.json"
-    print(f"[DEBUG] Försöker hämta elpriser från URL: {url}")
+    print(f"[DEBUG] Hämtar elpriser (1 gång) från URL: {url}")
     
-    headers_np = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(2):
         try:
-            res = requests.get(url, headers=headers_np, timeout=10)
+            res = requests.get(url, headers=headers_np, timeout=4)
             if res.status_code == 200:
                 data = res.json()
                 prices = [round(item["SEK_per_kWh"] * 100, 2) for item in data]
                 if len(prices) == 96:
-                    return prices
+                    _PRICE_CACHE[cache_key] = prices
+                    return list(prices)
                 elif len(prices) == 24:
-                    prices_96 = []
-                    for p in prices:
-                        prices_96.extend([p] * 4)
-                    return prices_96
-            else:
-                print(f"[WARNING] Försök {attempt+1}/{max_retries}: ElprisetJustNu svarade med HTTP {res.status_code}")
+                    prices_96 = [p for p in prices for _ in range(4)]
+                    _PRICE_CACHE[cache_key] = prices_96
+                    return list(prices_96)
+            elif res.status_code == 404:
+                print(f"[INFO] Priser för {date_str} ({zone_clean}) finns inte ännu (HTTP 404).")
+                return [50.0] * 96
         except Exception as e:
-            print(f"[WARNING] Försök {attempt+1}/{max_retries} - Fel vid hämtning av elpriser: {e}")
-        
-        if attempt < max_retries - 1:
-            time.sleep(10)
-            
-    print("[ERROR] Kunde inte hämta elpriser efter flera försök. Använder fallback.")
+            print(f"[WARNING] ElprisetJustNu försök {attempt+1} misslyckades: {e}")
+
+    # 2. Snabb reservkälla om ElprisetJustNu har driftstörning: Spot-Hinta.fi (EUR -> SEK schablon ~11.50)
+    try:
+        sh_url = f"https://api.spot-hinta.fi/TodayAndDayForward?region={zone_clean}"
+        res_sh = requests.get(sh_url, headers=headers_np, timeout=4)
+        if res_sh.status_code == 200:
+            sh_data = res_sh.json()
+            day_items = [item for item in sh_data if str(item.get("DateTime", "")).startswith(date_str)]
+            if len(day_items) == 96:
+                prices = [round(float(item["PriceNoTax"]) * 1150.0, 2) for item in day_items]
+                _PRICE_CACHE[cache_key] = prices
+                return list(prices)
+            elif len(day_items) == 24:
+                prices_24 = [round(float(item["PriceNoTax"]) * 1150.0, 2) for item in day_items]
+                prices_96 = [p for p in prices_24 for _ in range(4)]
+                _PRICE_CACHE[cache_key] = prices_96
+                return list(prices_96)
+    except Exception as e:
+        print(f"[WARNING] Reservkälla Spot-Hinta misslyckades: {e}")
+
+    print("[INFO] Kunde inte hämta elpriser för datumet. Använder fallback.")
     return [50.0] * 96
 
 # --- TEMPERATUR PROGNOS (SMHI -> MET NORWAY / YR -> OPEN-METEO) ---
@@ -824,6 +849,9 @@ def main():
                 zone = house_data.get("zone", "SE2")
                 
                 prices_today = get_nordpool_price(zone=zone, target_date=now)
+                if house_data.get("prices_today") != prices_today and len(set(prices_today)) > 1:
+                    house_data["prices_today"] = prices_today
+                    config_updated = True
                 current_price = prices_today[quarter_index] if quarter_index < len(prices_today) else 50.0
                 
                 current_temp = get_outside_temp(station=station, lat=lat, lon=lon)
@@ -887,6 +915,8 @@ def main():
                             house_data["ai_latest_reasoning"] = house_data.get("tomorrow_ai_reasoning")
                         if house_data.get("tomorrow_temp_forecast"):
                             house_data["temp_forecast_today"] = house_data.get("tomorrow_temp_forecast")
+                        if house_data.get("prices_tomorrow"):
+                            house_data["prices_today"] = house_data.get("prices_tomorrow")
                         house_data["last_ai_update"] = now.strftime("%Y-%m-%d %H:%M")
                         config_updated = True
                         needs_ai_update = False
@@ -991,6 +1021,7 @@ def main():
 
                             house_data["tomorrow_schedule_date"] = tomorrow_str
                             house_data["tomorrow_schedule"] = new_tomorrow_sched
+                            house_data["prices_tomorrow"] = prices_tomorrow
                             house_data["tomorrow_temp_forecast"] = temp_forecast_tom
                             house_data["tomorrow_ai_reasoning"] = reasoning_tom
                             config_updated = True
