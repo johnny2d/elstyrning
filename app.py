@@ -294,10 +294,11 @@ def cached_nordpool_price(zone: str, date_str: str):
 def safe_tuya_status(d_id, d_type):
     if not d_id:
         return False, "Ej konfigurerad", None, None
+    query_type = "thermostat" if d_type in ["thermostat", "sensor"] else "switch"
     try:
-        res = get_tuya_device_status(d_id, device_type=d_type, include_battery=True)
+        res = get_tuya_device_status(d_id, device_type=query_type, include_battery=True)
     except TypeError:
-        res = get_tuya_device_status(d_id, device_type=d_type)
+        res = get_tuya_device_status(d_id, device_type=query_type)
     if isinstance(res, tuple) and len(res) == 4:
         return res
     elif isinstance(res, tuple) and len(res) == 3:
@@ -362,8 +363,8 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
                     secondary_y=True
                 )
 
-    # 4. Statuspluppar och övergångslinjer
-    if current_device:
+    # 4. Statuspluppar och övergångslinjer (hoppas över för fristående sensorer)
+    if current_device and current_device.get("type") != "sensor":
         if not schedule_data or not isinstance(schedule_data, list) or len(schedule_data) < 96:
             schedule_data = [False] * 96
 
@@ -583,39 +584,37 @@ with tab_dash:
                         st.markdown("<br>", unsafe_allow_html=True)
                     else:
                         with st.container(border=True):
-                            st.markdown(f"#### 🔌 {dev.get('name')}")
-                            is_term = dev.get("type") == "thermostat"
-                            st.caption(f"Typ: {'Termostat' if is_term else 'Relä / Switch'}")
-                            
-                            st.markdown(f"**Status:** `{tuya_msg}`")
-                            
-                            if is_term and dev_temp is not None:
-                                st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`{format_battery(dev_batt)}")
+                            st.markdown(f"#### {'🌡️' if dev.get('type') == 'sensor' else '🔌'} {dev.get('name')}")
+                            d_type = dev.get("type", "switch")
+                            type_label = "Termostat" if d_type == "thermostat" else ("Fristående termometer" if d_type == "sensor" else "Relä / Switch")
+                            st.caption(f"Typ: {type_label}")
 
-                            elif thermo_id:
-                                if thermo_conn and room_temp is not None:
-                                    st.markdown(
-                                        f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` "
-                                        f"(Mål: {dev.get('target_room_temp', 20.0)}°C)"
-                                        f"{format_battery(thermo_batt)}"
-                                    )
-                                elif thermo_conn:
-                                    st.markdown(
-                                        f"🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`{format_battery(thermo_batt)}"
-                                    )
+                            if d_type == "sensor":
+                                if dev_temp is not None:
+                                    st.markdown(f"🌡️ **Temperatur:** `{dev_temp:.1f} °C`{format_battery(dev_batt)}")
                                 else:
-                                    st.markdown(
-                                        "🌡️ **Rumstemp:** `OFFLINE ⚠️`"
-                                    )
-
+                                    st.markdown(f"🌡️ **Temperatur:** `Ingen data ⚠️`{format_battery(dev_batt)}")
                             else:
-                                st.markdown(
-                                    f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`"
-                                )
+                                st.markdown(f"**Status:** `{tuya_msg}`")
+                                
+                                if d_type == "thermostat" and dev_temp is not None:
+                                    st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`{format_battery(dev_batt)}")
+                                elif thermo_id:
+                                    if thermo_conn and room_temp is not None:
+                                        st.markdown(
+                                            f"🌡️ **Rumstemp:** `{room_temp:.1f} °C` "
+                                            f"(Mål: {dev.get('target_room_temp', 20.0)}°C)"
+                                            f"{format_battery(thermo_batt)}"
+                                        )
+                                    elif thermo_conn:
+                                        st.markdown(f"🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`{format_battery(thermo_batt)}")
+                                    else:
+                                        st.markdown("🌡️ **Rumstemp:** `OFFLINE ⚠️`")
+                                else:
+                                    st.markdown(f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`")
 
-                            st.markdown(
-                                f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`"
-                            )
+                                st.markdown(f"**Driftläge:** `{dev.get('force_override', 'AUTO')}`")
+                            
 
     st.divider()
     with st.expander("📊 Visa rådata / Historiklogg per kvart"):
@@ -637,43 +636,48 @@ with tab_settings:
         st.info("Ingen enhet vald.")
     else:
         st.subheader(f"⚙️ Inställningar för {current_device.get('name')}")
-        is_thermostat = current_device.get("type") == "thermostat"
+        dev_type_curr = current_device.get("type", "switch")
+        is_thermostat = (dev_type_curr == "thermostat")
+        is_sensor = (dev_type_curr == "sensor")
 
-        if is_thermostat:
-            t_high = st.number_input("Hög temperatur (Komfort) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
-            t_low = st.number_input("Låg temperatur (Eco) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
+        if is_sensor:
+            st.info("🌡️ **Fristående termometer:** Denna enhet mäter och loggar endast rumstemperaturen samt batterinivån automatiskt (ingen styrning sker).")
         else:
-            st.info("🤖 **Automatisk optimering & rumsklimat:** Systemet kombinerar prisoptimeringen med önskad rumstemperatur.")
-            target_r_temp = st.number_input("Önskad rumstemperatur [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_room_temp", 20.0)), step=0.5)
-            thermo_id_input = st.text_input("Tuya Device ID för separat rumstermometer (Valfritt)", value=current_device.get("thermometer_device_id", ""))
-
-        force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
-
-        if st.button("💾 Spara enhetsinställningar", type="primary"):
             if is_thermostat:
-                current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
+                t_high = st.number_input("Hög temperatur (Komfort) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
+                t_low = st.number_input("Låg temperatur (Eco) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
             else:
-                current_device.update({
-                    "target_room_temp": target_r_temp, 
-                    "thermometer_device_id": thermo_id_input.strip(),
-                    "force_override": force
-                })
-            save_config(config)
+                st.info("🤖 **Automatisk optimering & rumsklimat:** Systemet kombinerar prisoptimeringen med önskad rumstemperatur.")
+                target_r_temp = st.number_input("Önskad rumstemperatur [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_room_temp", 20.0)), step=0.5)
+                thermo_id_input = st.text_input("Tuya Device ID för separat rumstermometer (Valfritt)", value=current_device.get("thermometer_device_id", ""))
 
-            dev_id = current_device.get("device_id")
-            if dev_id:
+            force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
+
+            if st.button("💾 Spara enhetsinställningar", type="primary"):
                 if is_thermostat:
-                    target_val = t_high if force == "PÅ (Tvinga igång)" else (t_low if force == "AV (Stäng av allt)" else t_low)
-                    set_tuya_device(dev_id, target_val, device_type="thermostat")
+                    current_device.update({"target_temp_high": t_high, "target_temp_low": t_low, "force_override": force})
                 else:
-                    switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
-                    if force != "AUTO":
-                        set_tuya_device(dev_id, switch_val, device_type="switch")
+                    current_device.update({
+                        "target_room_temp": target_r_temp, 
+                        "thermometer_device_id": thermo_id_input.strip(),
+                        "force_override": force
+                    })
+                save_config(config)
 
-            load_gist_data.clear()
-            st.success("Inställningarna sparades och skickades till enheten!")
-            time.sleep(1)
-            st.rerun()
+                dev_id = current_device.get("device_id")
+                if dev_id:
+                    if is_thermostat:
+                        target_val = t_high if force == "PÅ (Tvinga igång)" else (t_low if force == "AV (Stäng av allt)" else t_low)
+                        set_tuya_device(dev_id, target_val, device_type="thermostat")
+                    else:
+                        switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
+                        if force != "AUTO":
+                            set_tuya_device(dev_id, switch_val, device_type="switch")
+
+                load_gist_data.clear()
+                st.success("Inställningarna sparades och skickades till enheten!")
+                time.sleep(1)
+                st.rerun()
 
     st.divider()
     st.subheader("🏠 Husets inställningar & Paus")
@@ -906,7 +910,7 @@ if is_admin and tab_admin:
         if current_house:
             dev_name = st.text_input("Enhetsnamn")
             dev_tuya_id = st.text_input("Tuya Device ID")
-            dev_type = st.selectbox("Typ", ["switch", "thermostat"])
+            dev_type = st.selectbox("Typ", ["switch", "thermostat", "sensor"], format_func=lambda t: {"switch": "Relä / Switch", "thermostat": "Termostat", "sensor": "Fristående termometer"}[t])
             if st.button("Lägg till Enhet"):
                 if dev_name and dev_tuya_id:
                     new_dev = {

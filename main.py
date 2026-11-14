@@ -1171,6 +1171,33 @@ def main():
                             "reason": reason
                         }
                         history.append(log_entry)
+                    
+                    elif dev_type == "sensor":
+                        # Fristående temperaturgivare (ingen styrning, enbart mätning & loggning)
+                        sensor_conn, _, sensor_temp = get_tuya_device_status(dev_id, device_type="thermostat")
+
+                        if not sensor_conn:
+                            final_status = "OFFLINE"
+                            reason = f"[{dev_name}] Fristående termometer OFFLINE ⚠️"
+                        elif sensor_temp is not None:
+                            final_status = f"{sensor_temp:.1f}°C"
+                            reason = f"[{dev_name}] Temperaturmätning: {sensor_temp:.1f}°C"
+                        else:
+                            final_status = "N/A"
+                            reason = f"[{dev_name}] Ansluten men inget temperaturvärde hittades ⚠️"
+
+                        log_entry = {
+                            "timestamp": now.strftime("%Y-%m-%d %H:%M"),
+                            "house": house_data.get('name'),
+                            "device": dev_name,
+                            "price": round(current_price, 2),
+                            "status": final_status,
+                            "temp": round(current_temp, 1),
+                            "device_temp": round(sensor_temp, 1) if sensor_temp is not None else None,
+                            "room_temp": round(sensor_temp, 1) if sensor_temp is not None else None,
+                            "reason": reason
+                        }
+                        history.append(log_entry)
 
                     else: # Typ: Switch
                         should_be_on = False
