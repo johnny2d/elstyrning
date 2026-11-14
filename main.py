@@ -83,7 +83,8 @@ def save_history(history_data):
     if not GIST_ID:
         return
 
-    trimmed_history = history_data[-300:] 
+    # Utökad historikbuffert (1000 rader) så att 16-kvartarsvakten har full täckning för alla enheter
+    trimmed_history = history_data[-1000:] 
     payload = {
         "files": {
             "history.json": {
@@ -207,6 +208,7 @@ def resolve_location(place_name: str, fallback_lat=63.25, fallback_lon=14.56):
         print(f"[GEO WARN] Kunde inte slå upp ort '{place_name}': {e}")
 
     return fallback_lat, fallback_lon
+
 # --- TEMPERATUR PROGNOS (SMHI -> MET NORWAY / YR -> OPEN-METEO) ---
 def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None, station=None):
     lat, lon = resolve_location(station, lat, lon)
@@ -240,7 +242,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None, station=Non
                     if h in hourly_map:
                         last_val = hourly_map[h]
                     result.append(last_val)
-                print(f"[WEATHER] Hämtade 24h prognos från SMHI för {target_str}")
+                print(f"[WEATHER] Hämtade 24h prognos från SMHI för '{station or 'standard'}' ({target_str})")
                 return result
     except Exception as e:
         print(f"[WARNING] SMHI prognos misslyckades: {e}")
@@ -267,7 +269,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None, station=Non
                     if h in hourly_map:
                         last_val = hourly_map[h]
                     result.append(last_val)
-                print(f"[WEATHER] Hämtade 24h prognos från MET Norway (Yr) för {target_str}")
+                print(f"[WEATHER] Hämtade 24h prognos från MET Norway (Yr) för '{station or 'standard'}' ({target_str})")
                 return result
     except Exception as e:
         print(f"[WARNING] MET Norway prognos misslyckades: {e}")
@@ -293,7 +295,7 @@ def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None, station=Non
     
     return [5.0] * 24
 
-# --- UTETEMPERATUR NU (TEMPERATUR.NU -> SMHI -> MET NORWAY -> OPEN-METEO) ---
+# --- UTETEMPERATUR NU (SMHI -> MET NORWAY) ---
 def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     lat, lon = resolve_location(station, lat, lon)
     headers_ua = {"User-Agent": "ElstyrningHomeAutomation/2.0 (kontakt@elstyrning.se)"}
@@ -328,8 +330,8 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
 
     return 0.0
 
-# --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS (DETERMINISTISKT) ---
-def calculate_required_runtime(temp_forecast, current_temp=5.0):
+# --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS & MÅLTEMPERATUR (DETERMINISTISKT) ---
+def calculate_required_runtime(temp_forecast, current_temp=5.0, target_temp=20.0):
     if not temp_forecast or len(temp_forecast) < 24:
         temp_forecast = [current_temp] * 24
         
@@ -340,19 +342,30 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0):
     hours_below_minus20 = sum(1 for t in temp_forecast if t <= -20)
 
     if hours_below_minus20 >= 8:
-        return 20
+        base_hours = 20
     elif hours_below_minus15 >= 12:
-        return 16
+        base_hours = 16
     elif hours_below_minus5 >= 8:
-        return 12
+        base_hours = 12
     elif hours_below_zero >= 18:
-        return 12
+        base_hours = 12
     elif hours_below_zero >= 8:
-        return 10
+        base_hours = 10
     elif avg_temp < 5.0:
-        return 8
+        base_hours = 8
     else:
-        return 6
+        base_hours = 6
+
+    # Skalning för utrymmen med lägre måltemperatur (t.ex. källare/förråd/garage < 16°C)
+    # Värmeförlusten är fysikaliskt proportionell mot temperaturskillnaden (T_inne - T_ute)
+    if target_temp is not None and float(target_temp) < 16.0:
+        delta_actual = max(2.0, float(target_temp) - avg_temp)
+        delta_ref = max(5.0, 20.0 - avg_temp)
+        scale_factor = max(0.35, min(1.0, delta_actual / delta_ref))
+        scaled_hours = int(round(base_hours * scale_factor))
+        return max(3, min(20, scaled_hours))
+
+    return base_hours
 
 # --- AI STRATEGEN (GEMINI) ---
 def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target_temp=20.0, default_price_cap=50.0, target_day_label="idag", required_runtime_hours=None, **kwargs):
@@ -365,7 +378,7 @@ def get_ai_optimized_parameters(prices_96, temp_hourly, current_temp=5.0, target
     avg_temp = sum(temp_hourly) / len(temp_hourly) if temp_hourly else current_temp
 
     if required_runtime_hours is None:
-        required_runtime_hours = calculate_required_runtime(temp_hourly, current_temp=current_temp)
+        required_runtime_hours = calculate_required_runtime(temp_hourly, current_temp=current_temp, target_temp=target_temp)
 
     def build_fallback(motivering_text):
         fallback_price_cap = max(min_price, local_smart_price_cap)
@@ -675,7 +688,8 @@ def generate_daily_schedule(
     min_minutes_cold=15, 
     price_cap=50.0,
     required_runtime_hours=8,
-    max_consecutive_off_hours=6
+    max_consecutive_off_hours=6,
+    target_temp=20.0
 ):
 
     print(
@@ -683,6 +697,7 @@ def generate_daily_schedule(
         f"price_cap={price_cap} | "
         f"runtime={required_runtime_hours}h | "
         f"max_off={max_consecutive_off_hours}h | "
+        f"mål={target_temp:.1f}C | "
         f"utetemp={current_temp:.1f}C"
     )
 
@@ -701,6 +716,11 @@ def generate_daily_schedule(
         max_consecutive_off_hours = min(max_consecutive_off_hours, 4)
     elif hours_below_zero >= 8:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 5)
+
+    # För utrymmen med låg måltemperatur (t.ex. källare < 16°C) tillåts något längre sammanhängande
+    # avstängning vid måttlig kyla så att PuLP kan välja exakt de billigaste timmarna
+    if target_temp is not None and float(target_temp) < 16.0 and hours_below_minus15 < 12:
+        max_consecutive_off_hours = max(max_consecutive_off_hours, 5)
 
     print(
         f"[PULP SAFETY] "
@@ -943,7 +963,7 @@ def main():
                     house_data["temp_forecast_today"] = temp_forecast
                     config_updated = True
 
-                req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp)
+                req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp, target_temp=house_target_temp)
                 max_off_h = 4 if (sum(temp_forecast) / len(temp_forecast) if temp_forecast else current_temp) >= 0 else 2
 
                 if needs_ai_update:
@@ -970,7 +990,8 @@ def main():
                             current_temp=current_temp, 
                             price_cap=p_cap,
                             required_runtime_hours=req_runtime,
-                            max_consecutive_off_hours=max_off_h
+                            max_consecutive_off_hours=max_off_h,
+                            target_temp=house_target_temp
                         )
                         
                         daily_schedule = new_schedule
@@ -993,7 +1014,8 @@ def main():
                             current_temp=current_temp, 
                             price_cap=fallback_p_cap,
                             required_runtime_hours=req_runtime,
-                            max_consecutive_off_hours=max_off_h
+                            max_consecutive_off_hours=max_off_h,
+                            target_temp=house_target_temp
                         )
                         active_schedule_date = today_str
                         house_data["last_ai_attempt"] = now.strftime("%Y-%m-%d %H:%M")
@@ -1009,7 +1031,7 @@ def main():
 
                         if len(set(prices_tomorrow)) > 1: 
                             temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt, station=station)
-                            req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
+                            req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp, target_temp=house_target_temp)
                             time.sleep(5 + random.uniform(0, 3))
                             ai_result_tom = get_ai_optimized_parameters(
                                 prices_tomorrow, 
@@ -1031,7 +1053,8 @@ def main():
                                 current_temp=current_temp, 
                                 price_cap=p_cap_tom,
                                 required_runtime_hours=req_runtime_tom,
-                                max_consecutive_off_hours=max_off_h_tom
+                                max_consecutive_off_hours=max_off_h_tom,
+                                target_temp=house_target_temp
                             )
 
                             house_data["tomorrow_schedule_date"] = tomorrow_str
@@ -1054,37 +1077,43 @@ def main():
 
                     if not dev_id:
                         continue
-                    dev_schedule = daily_schedule
-                    if dev_price_cap != price_cap:
-                        dev_schedule = generate_daily_schedule(
-                            prices_today,
-                            temp_hourly=temp_forecast,
-                            current_temp=current_temp,
-                            price_cap=dev_price_cap,
-                            required_runtime_hours=req_runtime,
-                            max_consecutive_off_hours=max_off_h
-                        )
 
                     thermo_id = dev.get("thermometer_device_id")
                     target_room_temp = float(dev.get("target_room_temp", 20.0))
                     measured_room_temp = None
                     thermo_active = False
 
+                    # Beräkna enhetens eget drifttidsbehov utifrån dess måltemperatur (t.ex. 8°C i källare vs 20°C i hus)
+                    dev_req_runtime = calculate_required_runtime(temp_forecast, current_temp=current_temp, target_temp=target_room_temp)
+                    dev_schedule = daily_schedule
+                    if dev_price_cap != price_cap or dev_req_runtime != req_runtime:
+                        dev_schedule = generate_daily_schedule(
+                            prices_today,
+                            temp_hourly=temp_forecast,
+                            current_temp=current_temp,
+                            price_cap=dev_price_cap,
+                            required_runtime_hours=dev_req_runtime,
+                            max_consecutive_off_hours=max_off_h,
+                            target_temp=target_room_temp
+                        )
+
+                    dev_hist = [
+                        h for h in history 
+                        if h.get("house") == house_data.get("name") and h.get("device") == dev_name
+                    ]
+
                     if thermo_id:
                         thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat")
                         
-                        # Säkerhetsvakt mot "frusen" batteritermometer (samma värde > 4 timmar trots värme PÅ)
-                        if thermo_active and measured_room_temp is not None and history:
-                            dev_hist = [
-                                h for h in history 
-                                if h.get("house") == house_data.get("name") and h.get("device") == dev_name
-                            ][-16:]
-                            if len(dev_hist) >= 16:
-                                recent_temps = [h.get("room_temp") for h in dev_hist]
-                                recent_on = sum(1 for h in dev_hist if h.get("status") == "ON")
-                                if all(t == round(measured_room_temp, 1) for t in recent_temps) and recent_on >= 8:
-                                    print(f"[THERMO STUCK WARN] Givare för {dev_name} har legat låst på {measured_room_temp}C i >4h trots drift. Ignorerar givare!")
-                                    thermo_active = False
+                        # Uppdaterad säkerhetsvakt: Fångar BÅDE givare som låst sig lågt (tvingar PÅ) 
+                        # OCH givare som låst sig högt (tvingar AV trots kyla ute) i > 4 timmar (16 kvartar)
+                        if thermo_active and measured_room_temp is not None and len(dev_hist) >= 16:
+                            recent_16 = dev_hist[-16:]
+                            recent_temps = [h.get("room_temp") for h in recent_16]
+                            recent_on = sum(1 for h in recent_16 if h.get("status") == "ON")
+                            if all(t == round(measured_room_temp, 1) for t in recent_temps) and (recent_on >= 4 or abs(current_temp - measured_room_temp) >= 5.0):
+                                print(f"[THERMO STUCK WARN] Givare för {dev_name} har legat helt låst på {measured_room_temp}C i >4h. Ignorerar givare och kör på PuLP-schema!")
+                                thermo_active = False
 
                     if dev_type == "thermostat":
                         t_high = float(dev.get("target_temp_high", 10.0))
@@ -1108,11 +1137,10 @@ def main():
                                 is_active = (current_price <= dev_price_cap)
                                 target_temp_val = t_high if is_active else t_low
                                 reason = f"[{dev_name}] Reservregel: Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
-
-                            if current_temp <= cold_threshold and min_mins_cold > 0:
-                                if now.minute < min_mins_cold:
+                                # Köldskydd endast om giltigt PuLP-schema saknas
+                                if current_temp <= cold_threshold and min_mins_cold > 0 and now.minute < min_mins_cold:
                                     target_temp_val = t_high
-                                    reason = f"[{dev_name}] Köldskydd aktivt -> HÖG temp ({t_high}°C)"
+                                    reason = f"[{dev_name}] Köldskydd aktivt (Reservläge) -> HÖG temp ({t_high}°C)"
 
                         set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
                         time.sleep(2)
@@ -1153,24 +1181,24 @@ def main():
                                 reason = f"[{dev_name}] Reservregel (Inget schema): Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
 
                             if thermo_active and measured_room_temp is not None:
-                                if measured_room_temp < target_room_temp - 0.5:
+                                # Anti-kortcykling: Om förra kvarten tvingades PÅ pga undertemp, värm upp till minst target - 0.2°C
+                                prev_under_temp = (len(dev_hist) > 0 and " < Mål (" in str(dev_hist[-1].get("reason", "")))
+                                if measured_room_temp < target_room_temp - 0.5 or (prev_under_temp and measured_room_temp < target_room_temp - 0.2):
                                     should_be_on = True
                                     reason = f"[{dev_name}] Klimatreglering: Rumstemp ({measured_room_temp:.1f}°C) < Mål ({target_room_temp:.1f}°C) -> Tvingar PÅ"
                                 elif measured_room_temp >= target_room_temp + 0.2:
                                     should_be_on = False
                                     reason = f"[{dev_name}] Klimatreglering: Måltemp nådd ({measured_room_temp:.1f}°C >= {target_room_temp:.1f}°C) -> Stänger AV"
                                 else:
-                                    # NY UTSKRIFT: Visar i loggen att rumstempen är OK och att PuLP-schemat därför får styra
                                     reason += f" (Rumstemp OK: {measured_room_temp:.1f}°C, Mål: {target_room_temp:.1f}°C)"
                             elif thermo_id and not thermo_active:
-                                reason += " [⚠️ Termometer offline - kör på enbart tidsschema]"
+                                reason += " [⚠️ Termometer offline/låst - kör på PuLP-schema]"
 
-                            # ÄNDRAT: Köldskyddet går ENDAST in om enheten saknar aktiv termometer!
-                            if (not thermo_active or measured_room_temp is None) and current_temp <= cold_threshold and min_mins_cold > 0:
-                                if now.minute < min_mins_cold:
+                            # Köldskydd går ENDAST in som reserv om både aktiv termometer OCH giltigt PuLP-schema saknas
+                            if (not thermo_active or measured_room_temp is None) and (not dev_schedule or len(dev_schedule) != 96):
+                                if current_temp <= cold_threshold and min_mins_cold > 0 and now.minute < min_mins_cold:
                                     should_be_on = True
-                                    extra_info = " [Termometer offline]" if thermo_id else ""
-                                    reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C){extra_info}"
+                                    reason = f"[{dev_name}] Köldskydd aktivt (Reservläge utan schema, {current_temp}°C <= {cold_threshold}°C)"
 
                         set_tuya_device(dev_id, should_be_on, device_type="switch")
                         time.sleep(2)
