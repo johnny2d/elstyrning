@@ -208,7 +208,8 @@ def resolve_location(place_name: str, fallback_lat=63.25, fallback_lon=14.56):
 
     return fallback_lat, fallback_lon
 # --- TEMPERATUR PROGNOS (SMHI -> MET NORWAY / YR -> OPEN-METEO) ---
-def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None):
+def get_hourly_temp_forecast(lat=63.25, lon=14.56, target_date=None, station=None):
+    lat, lon = resolve_location(station, lat, lon)
     sweden_tz = ZoneInfo("Europe/Stockholm")
     if not target_date:
         target_date = datetime.now(sweden_tz)
@@ -938,7 +939,7 @@ def main():
                 # Hämta bara ny 24h-prognos vid omräkning (2 ggr/dag) eller om den saknas i Gist
                 temp_forecast = house_data.get("temp_forecast_today")
                 if needs_ai_update or not temp_forecast or len(temp_forecast) < 24:
-                    temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now)
+                    temp_forecast = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=now, station=station)
                     house_data["temp_forecast_today"] = temp_forecast
                     config_updated = True
 
@@ -1007,7 +1008,7 @@ def main():
                         prices_tomorrow = get_nordpool_price(zone=zone, target_date=tomorrow_dt)
 
                         if len(set(prices_tomorrow)) > 1: 
-                            temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt)
+                            temp_forecast_tom = get_hourly_temp_forecast(lat=lat, lon=lon, target_date=tomorrow_dt, station=station)
                             req_runtime_tom = calculate_required_runtime(temp_forecast_tom, current_temp=current_temp)
                             time.sleep(5 + random.uniform(0, 3))
                             ai_result_tom = get_ai_optimized_parameters(
@@ -1158,13 +1159,18 @@ def main():
                                 elif measured_room_temp >= target_room_temp + 0.2:
                                     should_be_on = False
                                     reason = f"[{dev_name}] Klimatreglering: Måltemp nådd ({measured_room_temp:.1f}°C >= {target_room_temp:.1f}°C) -> Stänger AV"
+                                else:
+                                    # NY UTSKRIFT: Visar i loggen att rumstempen är OK och att PuLP-schemat därför får styra
+                                    reason += f" (Rumstemp OK: {measured_room_temp:.1f}°C, Mål: {target_room_temp:.1f}°C)"
                             elif thermo_id and not thermo_active:
                                 reason += " [⚠️ Termometer offline - kör på enbart tidsschema]"
 
-                            if current_temp <= cold_threshold and min_mins_cold > 0:
+                            # ÄNDRAT: Köldskyddet går ENDAST in om enheten saknar aktiv termometer!
+                            if (not thermo_active or measured_room_temp is None) and current_temp <= cold_threshold and min_mins_cold > 0:
                                 if now.minute < min_mins_cold:
                                     should_be_on = True
-                                    reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C)"
+                                    extra_info = " [Termometer offline]" if thermo_id else ""
+                                    reason = f"[{dev_name}] Köldskydd aktivt ({current_temp}°C <= {cold_threshold}°C){extra_info}"
 
                         set_tuya_device(dev_id, should_be_on, device_type="switch")
                         time.sleep(2)

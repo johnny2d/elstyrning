@@ -184,7 +184,7 @@ with st.sidebar:
                         # --- 1. BERÄKNA IDAG ---
                         time.sleep(4)
                         prices_today = get_nordpool_price(zone=h_zone, target_date=now)
-                        forecast_today = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now)
+                        forecast_today = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now, station=h_station)
                         req_runtime_today = calculate_required_runtime(forecast_today, current_temp=curr_temp)
                         
                         ai_res_today = get_ai_optimized_parameters(
@@ -226,7 +226,7 @@ with st.sidebar:
                         prices_tom = get_nordpool_price(zone=h_zone, target_date=tomorrow_dt)
                         if prices_tom and len(set(prices_tom)) > 1:
                             time.sleep(4)
-                            forecast_tom = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=tomorrow_dt)
+                            forecast_tom = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=tomorrow_dt, station=h_station)
                             req_runtime_tom = calculate_required_runtime(forecast_tom, current_temp=curr_temp)
 
                             ai_res_tom = get_ai_optimized_parameters(
@@ -770,7 +770,7 @@ with tab_sched:
                     curr_temp = current_house.get("last_outside_temp")
                     if curr_temp is None:
                         curr_temp = get_outside_temp(station=current_house.get("temperatur_nu_station"), lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56))
-                    temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=tomorrow_dt)
+                    temp_forecast = get_hourly_temp_forecast(lat=current_house.get("lat", 63.25), lon=current_house.get("lon", 14.56), target_date=tomorrow_dt, station=current_house.get("temperatur_nu_station"))
                     req_runtime_tom = calculate_required_runtime(temp_forecast, current_temp=curr_temp)
                     schedule = generate_daily_schedule(
                         prices, 
