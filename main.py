@@ -552,10 +552,11 @@ Returnera endast JSON och ingen annan text.
         return build_fallback(f"Reservplan aktiv: Fel vid AI-anrop ({err_msg[:60]}).")
 
 # --- TUYA CLOUD STYRNING & STATUS ---
-def set_tuya_device(device_id: str, value, device_type: str = "switch"):
+# --- TUYA CLOUD STYRNING & STATUS ---
+def set_tuya_device(device_id: str, value, device_type: str = "switch") -> bool:
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         print(f"[TUYA ERROR] Saknar API-nycklar eller Device ID för enhet {device_id}.")
-        return
+        return False
     
     for attempt in range(2):
         try:
@@ -566,6 +567,16 @@ def set_tuya_device(device_id: str, value, device_type: str = "switch"):
                 devId=device_id
             )
             
+            # Kontrollera först om enheten faktiskt har WiFi-kontakt i Tuya Cloud
+            try:
+                dev_info = cloud.cloudrequest(f"/v1.0/devices/{device_id}")
+                if isinstance(dev_info, dict) and dev_info.get("success") and isinstance(dev_info.get("result"), dict):
+                    if not dev_info["result"].get("online", True):
+                        print(f"[TUYA CMD OFFLINE] Enhet {device_id} är OFFLINE i Tuya Cloud - kommandot kan inte levereras!")
+                        return False
+            except Exception as e_info:
+                print(f"[TUYA INFO WARN] Kunde inte verifiera online-status före kommando ({device_id}): {e_info}")
+
             if device_type == "thermostat":
                 code_names = ["temp_set", "target_temp", "set_temp"]
                 cmd_value = int(value * 10) if isinstance(value, float) and value < 50 else value
@@ -573,7 +584,6 @@ def set_tuya_device(device_id: str, value, device_type: str = "switch"):
                 code_names = ["switch", "switch_1", "switch_heat"]
                 cmd_value = value
             
-            success = False
             for code_name in code_names:
                 commands = {
                     "commands": [
@@ -587,14 +597,11 @@ def set_tuya_device(device_id: str, value, device_type: str = "switch"):
                 print(f"[TUYA CMD ({device_id} / {code_name})]: value={cmd_value}, response={response}")
                 
                 if response and (response.get("success") is True or response.get("result") is True):
-                    success = True
-                    break
-            if success:
-                return
+                    return True
         except Exception as e:
             print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando till {device_id}: {e}")
     print(f"[ERROR] Tuya kommando misslyckades för enhet {device_id} efter flera försök.")
-
+    return False
 def get_tuya_device_status(device_id: str, device_type: str = "switch", include_battery: bool = False):
     if not all([TUYA_API_KEY, TUYA_API_SECRET, device_id]):
         return (False, ("OFF" if device_type == "switch" else "N/A"), None, None) if include_battery else (False, ("OFF" if device_type == "switch" else "N/A"), None)
@@ -1142,13 +1149,16 @@ def main():
                                     target_temp_val = t_high
                                     reason = f"[{dev_name}] Köldskydd aktivt (Reservläge) -> HÖG temp ({t_high}°C)"
 
-                        set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
+                        cmd_ok = set_tuya_device(dev_id, should_be_on, device_type="switch")
                         time.sleep(2)
 
-                        connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat", include_battery=False)
-                        final_room_temp = measured_dev_temp if measured_dev_temp is not None else measured_room_temp
+                        intended_str = "PÅ" if should_be_on else "AV"
+                        if not cmd_ok:
+                            final_status = "OFFLINE"
+                            reason += f" [❌ Switch OFFLINE - kommandot ({intended_str}) nådde inte fram!]"
+                        else:
+                            final_status = "ON" if should_be_on else "OFF"
 
-                        final_status = f"{target_temp_val}°C"
                         log_entry = {
                             "timestamp": now.strftime("%Y-%m-%d %H:%M"),
                             "house": house_data.get('name'),
@@ -1156,8 +1166,8 @@ def main():
                             "price": round(current_price, 2),
                             "status": final_status,
                             "temp": round(current_temp, 1),
-                            "device_temp": round(final_room_temp, 1) if final_room_temp is not None else None,
-                            "room_temp": round(final_room_temp, 1) if final_room_temp is not None else None,
+                            "device_temp": round(measured_room_temp, 1) if measured_room_temp is not None else None,
+                            "room_temp": round(measured_room_temp, 1) if measured_room_temp is not None else None,
                             "reason": reason
                         }
                         history.append(log_entry)
