@@ -165,7 +165,8 @@ with st.sidebar:
                 
                 any_updated = False
 
-                for h_key, h_data in houses.items():
+                target_houses = {selected_house_key: current_house} if (selected_house_key and current_house) else houses
+                for h_key, h_data in target_houses.items():
                     if h_data.get("paused", False):
                         continue
                     
@@ -743,7 +744,7 @@ with tab_settings:
         if paused_state != current_house.get("paused", False):
             current_house["paused"] = paused_state
             if pause_key_admin in st.session_state:
-                st.session_state[pause_key_admin] = paused_state
+                del st.session_state[pause_key_admin]
             save_config(config)
             load_gist_data.clear()
             time.sleep(0.5)
@@ -924,7 +925,7 @@ if is_admin and tab_admin:
                     h_v["paused"] = admin_paused
                     settings_key = f"pause_house_{h_k}"
                     if settings_key in st.session_state:
-                        st.session_state[settings_key] = admin_paused
+                        del st.session_state[settings_key]
                     save_config(config)
                     load_gist_data.clear()
                     time.sleep(0.5)

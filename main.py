@@ -514,7 +514,8 @@ Returnera endast JSON och ingen annan text.
                 time.sleep(sleep_time)
                 delay *= 2
             else:
-                raise e
+                print(f"[WARNING] Google API ej tillgängligt efter {attempt+1} försök ({err_str[:60]}). Kör lokal PuLP-reservplan.")
+                return build_fallback("Reservplan aktiv (AI-tjänsten var tillfälligt upptagen, schemat är optimerat lokalt).")
 
     try:
         clean_json = raw_text.replace("```json", "").replace("```", "").strip()
@@ -835,7 +836,7 @@ def generate_daily_schedule(
     elif hours_below_minus5 >= 8:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
     elif hours_below_zero >= 8 or hours_below_plus2 >= 12:
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
 
     # Endast för utrymmen < 12°C (t.ex. källare 8°C) tillåts upp till 5h avstängning vid mild kyla
     if target_temp is not None and float(target_temp) < 12.0 and hours_below_minus15 < 12:
@@ -862,16 +863,6 @@ def generate_daily_schedule(
     costs = []
     for i in range(96):
         price = prices_96[i]
-        
-        # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING & LÅGPRISUTJÄMNING ---
-    is_flat_fallback = (len(set(prices_96)) <= 1)
-    max_day_p = max(prices_96) if prices_96 else 50.0
-    min_day_p = min(prices_96) if prices_96 else 50.0
-    is_cheap_day = (max_day_p <= 25.0 or (max_day_p - min_day_p) <= 15.0)
-
-    costs = []
-    for i in range(96):
-        price = prices_96[i]
         w_start = max(0, i - 8)
         w_end = min(96, i + 9)
         window_prices = prices_96[w_start:w_end]
@@ -880,9 +871,9 @@ def generate_daily_schedule(
         if is_flat_fallback:
             effective_cost = price + math.sin(i * math.pi / 6.0) * 0.5
         elif is_cheap_day:
-            # När elen är billig hela dygnet (<25 öre): jämför bara mot lokalt 4h-snitt
-            # så att PuLP fördelar värmen jämnt över hela dygnet men ändå väljer de billigaste kvartarna varje timme!
-            effective_cost = (price - local_avg) + math.sin(i * math.pi / 4.0) * 0.5
+            # Alltid positiv kostnad (bas 50) som jämför mot lokalt 4h-snitt
+            # så att värmen sprids jämnt över hela dygnet utan negativa tal!
+            effective_cost = max(1.0, 50.0 + (price - local_avg) + math.sin(i * math.pi / 4.0) * 0.5)
         else:
             spike_ratio = price / max(1.0, local_avg)
             
