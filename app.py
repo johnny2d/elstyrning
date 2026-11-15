@@ -185,7 +185,7 @@ with st.sidebar:
                         time.sleep(4)
                         prices_today = get_nordpool_price(zone=h_zone, target_date=now)
                         forecast_today = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=now, station=h_station)
-                        req_runtime_today = calculate_required_runtime(forecast_today, current_temp=curr_temp)
+                        req_runtime_today = calculate_required_runtime(forecast_today, current_temp=curr_temp, target_temp=house_target_temp)
                         
                         ai_res_today = get_ai_optimized_parameters(
                             prices_today, 
@@ -203,7 +203,8 @@ with st.sidebar:
                             current_temp=curr_temp, 
                             price_cap=ai_res_today["price_cap"],
                             required_runtime_hours=req_runtime_today,
-                            max_consecutive_off_hours=ai_res_today["max_consecutive_off_hours"]
+                            max_consecutive_off_hours=ai_res_today["max_consecutive_off_hours"],
+                            target_temp=house_target_temp
                         )
 
                         # Skriv över dagens schema och spara både priser och väderprognos i Gist
@@ -227,7 +228,7 @@ with st.sidebar:
                         if prices_tom and len(set(prices_tom)) > 1:
                             time.sleep(4)
                             forecast_tom = get_hourly_temp_forecast(lat=h_lat, lon=h_lon, target_date=tomorrow_dt, station=h_station)
-                            req_runtime_tom = calculate_required_runtime(forecast_tom, current_temp=curr_temp)
+                            req_runtime_tom = calculate_required_runtime(forecast_tom, current_temp=curr_temp, target_temp=house_target_temp)
 
                             ai_res_tom = get_ai_optimized_parameters(
                                 prices_tom, 
@@ -245,7 +246,8 @@ with st.sidebar:
                                 current_temp=curr_temp, 
                                 price_cap=ai_res_tom["price_cap"],
                                 required_runtime_hours=req_runtime_tom,
-                                max_consecutive_off_hours=ai_res_tom["max_consecutive_off_hours"]
+                                max_consecutive_off_hours=ai_res_tom["max_consecutive_off_hours"],
+                                target_temp=house_target_temp
                             )
 
                             # Skriv över morgondagens schema och spara både priser och prognos i Gist
@@ -291,19 +293,31 @@ def cached_nordpool_price(zone: str, date_str: str):
     return get_nordpool_price(zone=zone, target_date=dt)
 
 @st.cache_data(ttl=30)
-def safe_tuya_status(d_id, d_type):
+def safe_tuya_status(d_id, d_type, switch_channel="auto"):
     if not d_id:
-        return False, "Ej konfigurerad", None, None
+        return False, "Ej konfigurerad", None, None, None
     query_type = "thermostat" if d_type in ["thermostat", "sensor"] else "switch"
     try:
-        res = get_tuya_device_status(d_id, device_type=query_type, include_battery=True)
+        res = get_tuya_device_status(
+            d_id,
+            device_type=query_type,
+            include_battery=True,
+            include_power=True,
+            switch_channel=switch_channel
+        )
     except TypeError:
-        res = get_tuya_device_status(d_id, device_type=query_type)
-    if isinstance(res, tuple) and len(res) == 4:
-        return res
-    elif isinstance(res, tuple) and len(res) == 3:
-        return res[0], res[1], res[2], None
-    return False, "OFF", None, None
+        try:
+            res = get_tuya_device_status(d_id, device_type=query_type, include_battery=True)
+        except TypeError:
+            res = get_tuya_device_status(d_id, device_type=query_type)
+    if isinstance(res, tuple):
+        if len(res) == 5:
+            return res
+        elif len(res) == 4:
+            return res[0], res[1], res[2], res[3], None
+        elif len(res) == 3:
+            return res[0], res[1], res[2], None, None
+    return False, "OFF", None, None, None
 
 # --- FUNKTION FÖR ATT RITA GRAF ---
 def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermostat, current_device, chart_key, history_df=None):
@@ -452,7 +466,11 @@ with tab_dash:
     if current_house:
         for dev in current_house.get("devices", []):
             if dev.get("device_id"):
-                tuya_conn, _, _, _ = safe_tuya_status(dev.get("device_id"), dev.get("type", "switch"))
+                tuya_conn, _, _, _, _ = safe_tuya_status(
+                    dev.get("device_id"),
+                    dev.get("type", "switch"),
+                    dev.get("switch_channel", "auto")
+                )
                 if not tuya_conn:
                     offline_devices.append(dev.get("name"))
 
@@ -549,16 +567,18 @@ with tab_dash:
         if devs:
             dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
             for idx, dev in enumerate(devs):
-                tuya_conn, tuya_msg, dev_temp, dev_batt = safe_tuya_status(
+                dev_ch = dev.get("switch_channel", "auto")
+                tuya_conn, tuya_msg, dev_temp, dev_batt, dev_power = safe_tuya_status(
                     dev.get("device_id"), 
-                    dev.get("type", "switch")
+                    dev.get("type", "switch"),
+                    dev_ch
                 )
 
                 thermo_id = dev.get("thermometer_device_id")
-                thermo_conn, _, room_temp, thermo_batt = safe_tuya_status(
+                thermo_conn, _, room_temp, thermo_batt, _ = safe_tuya_status(
                     thermo_id, 
                     "thermostat"
-                ) if thermo_id else (False, "", None, None)
+                ) if thermo_id else (False, "", None, None, None)
 
                 # Hjälpfunktion för att formatera batteritext med ikon
                 def format_battery(batt_val):
@@ -569,6 +589,13 @@ with tab_dash:
                         warn = " ⚠️" if batt_val <= 20 else ""
                         return f" | {icon} **Batteri:** `{batt_val}%`{warn}"
                     return f" | 🔋 **Batteri:** `{batt_val}`"
+
+                ch_labels = {
+                    "auto": "Alla uttag (Auto)",
+                    "both": "Båda uttagen (1+2)",
+                    "switch_1": "Uttag 1",
+                    "switch_2": "Uttag 2"
+                }
 
                 with dev_cols[idx % 3]:
                     if not tuya_conn:
@@ -587,6 +614,8 @@ with tab_dash:
                             st.markdown(f"#### {'🌡️' if dev.get('type') == 'sensor' else '🔌'} {dev.get('name')}")
                             d_type = dev.get("type", "switch")
                             type_label = "Termostat" if d_type == "thermostat" else ("Fristående termometer" if d_type == "sensor" else "Relä / Switch")
+                            if d_type == "switch" and dev_ch in ["both", "switch_1", "switch_2"]:
+                                type_label += f" ({ch_labels.get(dev_ch, dev_ch)})"
                             st.caption(f"Typ: {type_label}")
 
                             if d_type == "sensor":
@@ -595,7 +624,8 @@ with tab_dash:
                                 else:
                                     st.markdown(f"🌡️ **Temperatur:** `Ingen data ⚠️`{format_battery(dev_batt)}")
                             else:
-                                st.markdown(f"**Status:** `{tuya_msg}`")
+                                power_str = f" | ⚡ **Effekt:** `{dev_power:.1f} W`" if dev_power is not None else ""
+                                st.markdown(f"**Status:** `{tuya_msg}`{power_str}")
                                 
                                 if d_type == "thermostat" and dev_temp is not None:
                                     st.markdown(f"🌡️ **Givartemp:** `{dev_temp:.1f} °C`{format_battery(dev_batt)}")
@@ -623,7 +653,7 @@ with tab_dash:
             if 'house' in df.columns and 'device' in df.columns:
                 df = df[(df['house'] == current_house.get('name')) & (df['device'] == current_device.get('name'))]
             if not df.empty:
-                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'temp', 'room_temp', 'device_temp', 'reason'] if c in df.columns]
+                cols_to_show = [c for c in ['timestamp', 'price', 'status', 'power_w', 'temp', 'room_temp', 'device_temp', 'reason'] if c in df.columns]
                 st.dataframe(df[cols_to_show].sort_values(by='timestamp', ascending=False), width="stretch")
             else:
                 st.info("Ingen historik för denna enhet ännu.")
@@ -643,12 +673,29 @@ with tab_settings:
         if is_sensor:
             st.info("🌡️ **Fristående termometer:** Denna enhet mäter och loggar endast rumstemperaturen samt batterinivån automatiskt (ingen styrning sker).")
         else:
+            channel_options = ["auto", "both", "switch_1", "switch_2"]
+            channel_labels = {
+                "auto": "Auto (Styr alla uttag på pluggen)",
+                "both": "Dubbeluttag: Styr BÅDA uttagen samtidigt (Uttag 1 + 2)",
+                "switch_1": "Dubbeluttag: Endast Uttag 1 (switch_1)",
+                "switch_2": "Dubbeluttag: Endast Uttag 2 (switch_2)"
+            }
+            selected_channel = current_device.get("switch_channel", "auto")
+            if selected_channel not in channel_options:
+                selected_channel = "auto"
+
             if is_thermostat:
                 t_high = st.number_input("Hög temperatur (Komfort) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_high", 10.0)), step=0.5)
                 t_low = st.number_input("Låg temperatur (Eco) [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_temp_low", 6.0)), step=0.5)
             else:
                 st.info("🤖 **Automatisk optimering & rumsklimat:** Systemet kombinerar prisoptimeringen med önskad rumstemperatur.")
                 target_r_temp = st.number_input("Önskad rumstemperatur [°C]", min_value=5.0, max_value=30.0, value=float(current_device.get("target_room_temp", 20.0)), step=0.5)
+                selected_channel = st.selectbox(
+                    "Uttag / Kanal (för dubbeluttag som Deltaco SH-P02E)",
+                    channel_options,
+                    index=channel_options.index(selected_channel),
+                    format_func=lambda c: channel_labels[c]
+                )
                 thermo_id_input = st.text_input("Tuya Device ID för separat rumstermometer (Valfritt)", value=current_device.get("thermometer_device_id", ""))
 
             force = st.radio("Driftläge", ["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"], index=["AUTO", "PÅ (Tvinga igång)", "AV (Stäng av allt)"].index(current_device.get("force_override", "AUTO")))
@@ -659,6 +706,7 @@ with tab_settings:
                 else:
                     current_device.update({
                         "target_room_temp": target_r_temp, 
+                        "switch_channel": selected_channel,
                         "thermometer_device_id": thermo_id_input.strip(),
                         "force_override": force
                     })
@@ -672,9 +720,10 @@ with tab_settings:
                     else:
                         switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
                         if force != "AUTO":
-                            set_tuya_device(dev_id, switch_val, device_type="switch")
+                            set_tuya_device(dev_id, switch_val, device_type="switch", switch_channel=selected_channel)
 
                 load_gist_data.clear()
+                safe_tuya_status.clear()
                 st.success("Inställningarna sparades och skickades till enheten!")
                 time.sleep(1)
                 st.rerun()
@@ -911,13 +960,26 @@ if is_admin and tab_admin:
             dev_name = st.text_input("Enhetsnamn")
             dev_tuya_id = st.text_input("Tuya Device ID")
             dev_type = st.selectbox("Typ", ["switch", "thermostat", "sensor"], format_func=lambda t: {"switch": "Relä / Switch", "thermostat": "Termostat", "sensor": "Fristående termometer"}[t])
+            dev_ch_new = "auto"
+            if dev_type == "switch":
+                dev_ch_new = st.selectbox(
+                    "Uttag / Kanal (för dubbeluttag som Deltaco SH-P02E)",
+                    ["auto", "both", "switch_1", "switch_2"],
+                    format_func=lambda c: {
+                        "auto": "Auto (Styr alla uttag på pluggen)",
+                        "both": "Båda uttagen samtidigt (Uttag 1 + 2)",
+                        "switch_1": "Endast Uttag 1 (switch_1)",
+                        "switch_2": "Endast Uttag 2 (switch_2)"
+                    }[c]
+                )
             if st.button("Lägg till Enhet"):
                 if dev_name and dev_tuya_id:
                     new_dev = {
                         "id": f"dev_{len(current_house.get('devices', []))+1}",
-                        "device_id": dev_tuya_id,
-                        "name": dev_name,
+                        "device_id": dev_tuya_id.strip(),
+                        "name": dev_name.strip(),
                         "type": dev_type,
+                        "switch_channel": dev_ch_new,
                         "target_room_temp": 20.0,
                         "thermometer_device_id": "",
                         "force_override": "AUTO"
