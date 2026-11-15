@@ -863,18 +863,27 @@ def generate_daily_schedule(
     for i in range(96):
         price = prices_96[i]
         
+        # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING & LÅGPRISUTJÄMNING ---
+    is_flat_fallback = (len(set(prices_96)) <= 1)
+    max_day_p = max(prices_96) if prices_96 else 50.0
+    min_day_p = min(prices_96) if prices_96 else 50.0
+    is_cheap_day = (max_day_p <= 25.0 or (max_day_p - min_day_p) <= 15.0)
+
+    costs = []
+    for i in range(96):
+        price = prices_96[i]
+        w_start = max(0, i - 8)
+        w_end = min(96, i + 9)
+        window_prices = prices_96[w_start:w_end]
+        local_avg = sum(window_prices) / len(window_prices) if window_prices else price
+        
         if is_flat_fallback:
             effective_cost = price + math.sin(i * math.pi / 6.0) * 0.5
         elif is_cheap_day:
-            # När elen är billig hela dygnet (<25 öre eller spann <15 öre): 
-            # sprid värmen jämnt över dygnet istället för att klumpa allt kl 04-07!
-            effective_cost = price + math.sin(i * math.pi / 4.0) * 2.0
+            # När elen är billig hela dygnet (<25 öre): jämför bara mot lokalt 4h-snitt
+            # så att PuLP fördelar värmen jämnt över hela dygnet men ändå väljer de billigaste kvartarna varje timme!
+            effective_cost = (price - local_avg) + math.sin(i * math.pi / 4.0) * 0.5
         else:
-            w_start = max(0, i - 8)
-            w_end = min(96, i + 9)
-            window_prices = prices_96[w_start:w_end]
-            local_avg = sum(window_prices) / len(window_prices) if window_prices else price
-            
             spike_ratio = price / max(1.0, local_avg)
             
             # Straffa endast om pristoppen är BÅDE >12% högre OCH minst 10 öre dyrare än omgivningen
@@ -889,13 +898,13 @@ def generate_daily_schedule(
 
     prob += pulp.lpSum(costs)
 
-    # 1. Totalt drifttidskrav över dygnet + balansering mellan dygnshalvor
+    # 1. Totalt drifttidskrav över dygnet + jämn balansering mellan dygnshalvor (minst 45% per dygnshalva)
     required_blocks = max(4, min(96, required_runtime_hours * 4))
     prob += pulp.lpSum([x[i] for i in range(96)]) >= required_blocks
     
-    # Förhindra att all värme hamnar på ena dygnshalvan vid kallfront/prisfall
-    prob += pulp.lpSum([x[i] for i in range(0, 48)]) >= int(required_blocks * 0.35)
-    prob += pulp.lpSum([x[i] for i in range(48, 96)]) >= int(required_blocks * 0.35)
+    # Förhindra att all värme klumpas på natten: minst 45% på fm (00-12) och minst 45% på em/kväll (12-24)
+    prob += pulp.lpSum([x[i] for i in range(0, 48)]) >= int(required_blocks * 0.45)
+    prob += pulp.lpSum([x[i] for i in range(48, 96)]) >= int(required_blocks * 0.45)
     
     # 2. Max AV-tid
     max_off_slots = max(4, max_consecutive_off_hours * 4)
