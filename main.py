@@ -333,11 +333,13 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 0.0
 
 # --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS & MÅLTEMPERATUR (DETERMINISTISKT) ---
+# --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS & MÅLTEMPERATUR (DETERMINISTISKT) ---
 def calculate_required_runtime(temp_forecast, current_temp=5.0, target_temp=20.0):
     if not temp_forecast or len(temp_forecast) < 24:
         temp_forecast = [current_temp] * 24
         
     avg_temp = sum(temp_forecast) / len(temp_forecast)
+    hours_below_plus2 = sum(1 for t in temp_forecast if t <= 2.0)
     hours_below_zero = sum(1 for t in temp_forecast if t <= 0)
     hours_below_minus5 = sum(1 for t in temp_forecast if t <= -5)
     hours_below_minus15 = sum(1 for t in temp_forecast if t <= -15)
@@ -348,24 +350,23 @@ def calculate_required_runtime(temp_forecast, current_temp=5.0, target_temp=20.0
     elif hours_below_minus15 >= 12:
         base_hours = 16
     elif hours_below_minus5 >= 8:
+        base_hours = 14
+    elif hours_below_zero >= 12:
         base_hours = 12
-    elif hours_below_zero >= 18:
-        base_hours = 12
-    elif hours_below_zero >= 8:
-        base_hours = 10
-    elif avg_temp < 5.0:
-        base_hours = 8
+    elif hours_below_plus2 >= 8 or avg_temp <= 2.0:
+        base_hours = 11
+    elif avg_temp < 6.0:
+        base_hours = 9
     else:
         base_hours = 6
 
-    # Skalning för utrymmen med lägre måltemperatur (t.ex. källare/förråd/garage < 16°C)
-    # Värmeförlusten är fysikaliskt proportionell mot temperaturskillnaden (T_inne - T_ute)
-    if target_temp is not None and float(target_temp) < 16.0:
+    # Skalning ENDAST för utrymmen med låg underhållsvärme (< 12°C, t.ex. källare på 8°C)
+    if target_temp is not None and float(target_temp) < 12.0:
         delta_actual = max(2.0, float(target_temp) - avg_temp)
         delta_ref = max(5.0, 20.0 - avg_temp)
-        scale_factor = max(0.35, min(1.0, delta_actual / delta_ref))
+        scale_factor = max(0.40, min(1.0, delta_actual / delta_ref))
         scaled_hours = int(round(base_hours * scale_factor))
-        return max(3, min(20, scaled_hours))
+        return max(4, min(20, scaled_hours))
 
     return base_hours
 
@@ -821,6 +822,7 @@ def generate_daily_schedule(
         f"utetemp={current_temp:.1f}C"
     )
 
+    hours_below_plus2 = sum(1 for t in temp_hourly if t <= 2.0) if temp_hourly else 0
     hours_below_zero = sum(1 for t in temp_hourly if t <= 0) if temp_hourly else 0
     hours_below_minus5 = sum(1 for t in temp_hourly if t <= -5) if temp_hourly else 0
     hours_below_minus15 = sum(1 for t in temp_hourly if t <= -15) if temp_hourly else 0
@@ -831,15 +833,12 @@ def generate_daily_schedule(
     elif hours_below_minus15 >= 12:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
     elif hours_below_minus5 >= 8:
+        max_consecutive_off_hours = min(max_consecutive_off_hours, 2)
+    elif hours_below_zero >= 8 or hours_below_plus2 >= 12:
         max_consecutive_off_hours = min(max_consecutive_off_hours, 3)
-    elif hours_below_zero >= 18:
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 4)
-    elif hours_below_zero >= 8:
-        max_consecutive_off_hours = min(max_consecutive_off_hours, 5)
 
-    # För utrymmen med låg måltemperatur (t.ex. källare < 16°C) tillåts något längre sammanhängande
-    # avstängning vid måttlig kyla så att PuLP kan välja exakt de billigaste timmarna
-    if target_temp is not None and float(target_temp) < 16.0 and hours_below_minus15 < 12:
+    # Endast för utrymmen < 12°C (t.ex. källare 8°C) tillåts upp till 5h avstängning vid mild kyla
+    if target_temp is not None and float(target_temp) < 12.0 and hours_below_minus15 < 12:
         max_consecutive_off_hours = max(max_consecutive_off_hours, 5)
 
     print(
@@ -854,30 +853,34 @@ def generate_daily_schedule(
     prob = pulp.LpProblem("Varmekostnad_Minimering", pulp.LpMinimize)
     x = pulp.LpVariable.dicts("slot", range(96), cat=pulp.LpBinary)
 
-    # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING (GLIDANDE FÖNSTER) ---
+    # --- KOSTNADSBERÄKNING MED LOKAL TOPPKAPNING & LÅGPRISUTJÄMNING ---
     is_flat_fallback = (len(set(prices_96)) <= 1)
+    max_day_p = max(prices_96) if prices_96 else 50.0
+    min_day_p = min(prices_96) if prices_96 else 50.0
+    is_cheap_day = (max_day_p <= 25.0 or (max_day_p - min_day_p) <= 15.0)
+
     costs = []
     for i in range(96):
         price = prices_96[i]
         
         if is_flat_fallback:
-            # Om reservpriser (50 öre platt) används: lägg på en svag sinusvåg 
-            # så att PuLP fördelar drifttiden jämnt över hela dygnet
             effective_cost = price + math.sin(i * math.pi / 6.0) * 0.5
+        elif is_cheap_day:
+            # När elen är billig hela dygnet (<25 öre eller spann <15 öre): 
+            # sprid värmen jämnt över dygnet istället för att klumpa allt kl 04-07!
+            effective_cost = price + math.sin(i * math.pi / 4.0) * 2.0
         else:
-            # Beräkna lokalt snittpris för de närmaste 2 timmarna före och efter (±8 kvartar)
             w_start = max(0, i - 8)
             w_end = min(96, i + 9)
             window_prices = prices_96[w_start:w_end]
             local_avg = sum(window_prices) / len(window_prices) if window_prices else price
             
-            # Jämför kvartens pris med sitt lokala snitt
             spike_ratio = price / max(1.0, local_avg)
             
-            # Om kvarten är en lokal pristopp (> 12% dyrare än omgivande tid) får den ett exponentiellt straff!
-            if spike_ratio > 1.12:
+            # Straffa endast om pristoppen är BÅDE >12% högre OCH minst 10 öre dyrare än omgivningen
+            if spike_ratio > 1.12 and (price - local_avg) >= 10.0:
                 effective_cost = price * (spike_ratio ** 3) * 2.5
-            elif price_cap is not None and price > price_cap:
+            elif price_cap is not None and price > price_cap and (price - min_day_p) >= 15.0:
                 effective_cost = price * 5.0
             else:
                 effective_cost = price
@@ -1020,8 +1023,8 @@ def main():
 
                 ref_device = devices[0]
                 price_cap = ref_device.get("price_cap", 50.0)
-                house_target_temp = float(ref_device.get("target_room_temp", 20.0))
-
+                switch_targets = [float(d.get("target_room_temp", 20.0)) for d in devices if d.get("type", "switch") == "switch"]
+                house_target_temp = max(switch_targets) if switch_targets else 20.0
                 active_schedule_date = house_data.get("schedule_date")
                 daily_schedule = house_data.get("daily_schedule")
                 last_ai_update_str = house_data.get("last_ai_update")

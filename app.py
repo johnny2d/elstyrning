@@ -179,8 +179,8 @@ with st.sidebar:
                         devs = h_data.get("devices", [])
                         ref = devs[0] if devs else {}
                         default_p_cap = ref.get("price_cap", 50.0)
-                        house_target_temp = float(ref.get("target_room_temp", 20.0))
-
+                        switch_targets = [float(d.get("target_room_temp", 20.0)) for d in devices if d.get("type", "switch") == "switch"]
+                        house_target_temp = max(switch_targets) if switch_targets else 20.0
                         # --- 1. BERÄKNA IDAG ---
                         time.sleep(4)
                         prices_today = get_nordpool_price(zone=h_zone, target_date=now)
