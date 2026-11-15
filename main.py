@@ -738,12 +738,17 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch", include_
                             pass
 
                     # Temperatur / Termostat eller Switch-status
+                    # Temperatur / Termostat eller Switch-status
                     if device_type == "thermostat":
+                        is_deci_scale = float(dp_map.get("maxtemp_set", 0) or 0) > 100
                         for t_code in ["va_temperature", "temp_current", "temperature", "room_temp", "sensor_temp"]:
                             if t_code in dp_map and dp_map[t_code] is not None:
                                 try:
                                     v = float(dp_map[t_code])
-                                    measured_temp = v / 10.0 if v > 50 else v
+                                    if t_code == "va_temperature" or is_deci_scale or abs(v) > 50:
+                                        measured_temp = v / 10.0
+                                    else:
+                                        measured_temp = v
                                 except Exception:
                                     pass
                                 break
