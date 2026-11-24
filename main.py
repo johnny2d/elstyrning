@@ -33,6 +33,8 @@ TUYA_REGION = os.getenv("TUYA_REGION", "eu")
 
 # Global minnescache så att samma elområde + datum ALDRIG hämtas mer än 1 gång per process
 _PRICE_CACHE = {}
+# Cache för fungerande Tuya DP-koder per enhet under körningen
+_DEVICE_DP_CACHE = {}
 
 # --- GIST-FUNKTIONER ---
 headers = {
@@ -333,7 +335,6 @@ def get_outside_temp(station="ostersund", lat=63.25, lon=14.56):
     return 0.0
 
 # --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS & MÅLTEMPERATUR (DETERMINISTISKT) ---
-# --- BERÄKNA DRIFTTID BASERAT PÅ PROGNOS & MÅLTEMPERATUR (DETERMINISTISKT) ---
 def calculate_required_runtime(temp_forecast, current_temp=5.0, target_temp=20.0):
     if not temp_forecast or len(temp_forecast) < 24:
         temp_forecast = [current_temp] * 24
@@ -575,85 +576,78 @@ def _parse_device_channel(device_id: str, switch_channel: str = "auto"):
             ch = "both"
     return clean_id, ch
 
-# --- TUYA CLOUD STYRNING & STATUS ---
+# --- TUYA CLOUD STYRNING & STATUS (KVOTSNÅL) ---
 def set_tuya_device(device_id: str, value, device_type: str = "switch", switch_channel: str = "auto") -> bool:
     clean_id, ch = _parse_device_channel(device_id, switch_channel)
     if not all([TUYA_API_KEY, TUYA_API_SECRET, clean_id]):
         print(f"[TUYA ERROR] Saknar API-nycklar eller Device ID för enhet {clean_id}.")
         return False
     
-    for attempt in range(2):
-        try:
-            cloud = tinytuya.Cloud(
-                apiRegion=TUYA_REGION,
-                apiKey=TUYA_API_KEY,
-                apiSecret=TUYA_API_SECRET,
-                devId=clean_id
-            )
-            
-            # Kontrollera först om enheten faktiskt har WiFi-kontakt i Tuya Cloud
-            try:
-                dev_info = cloud.cloudrequest(f"/v1.0/devices/{clean_id}")
-                if isinstance(dev_info, dict) and dev_info.get("success") and isinstance(dev_info.get("result"), dict):
-                    if not dev_info["result"].get("online", True):
-                        print(f"[TUYA CMD OFFLINE] Enhet {clean_id} är OFFLINE i Tuya Cloud - kommandot kan inte levereras!")
-                        return False
-            except Exception as e_info:
-                print(f"[TUYA INFO WARN] Kunde inte verifiera online-status före kommando ({clean_id}): {e_info}")
+    try:
+        cloud = tinytuya.Cloud(
+            apiRegion=TUYA_REGION,
+            apiKey=TUYA_API_KEY,
+            apiSecret=TUYA_API_SECRET,
+            devId=clean_id
+        )
 
-            if device_type == "thermostat":
-                code_names = ["temp_set", "target_temp", "set_temp"]
-                cmd_value = int(value * 10) if isinstance(value, float) and value < 50 else value
-                for code_name in code_names:
-                    commands = {"commands": [{"code": code_name, "value": cmd_value}]}
-                    response = cloud.sendcommand(clean_id, commands)
+        if device_type == "thermostat":
+            cached_code = _DEVICE_DP_CACHE.get(clean_id)
+            code_names = [cached_code] if cached_code else ["temp_set", "target_temp", "set_temp"]
+            cmd_value = int(value * 10) if isinstance(value, float) and value < 50 else value
+            for code_name in code_names:
+                commands = {"commands": [{"code": code_name, "value": cmd_value}]}
+                response = cloud.sendcommand(clean_id, commands)
+                print(f"[TUYA CMD ({clean_id} / {code_name})]: value={cmd_value}, response={response}")
+                if response and (response.get("success") is True or response.get("result") is True):
+                    _DEVICE_DP_CACHE[clean_id] = code_name
+                    return True
+        else:
+            cmd_value = bool(value)
+            # Specifikt uttag på dubbeluttag (Uttag 1 eller Uttag 2)
+            if ch in ["switch_1", "switch_2"]:
+                commands = {"commands": [{"code": ch, "value": cmd_value}]}
+                response = cloud.sendcommand(clean_id, commands)
+                print(f"[TUYA CMD ({clean_id} / {ch})]: value={cmd_value}, response={response}")
+                return bool(response and (response.get("success") is True or response.get("result") is True))
+            elif ch == "both":
+                commands = {"commands": [{"code": "switch_1", "value": cmd_value}, {"code": "switch_2", "value": cmd_value}]}
+                response = cloud.sendcommand(clean_id, commands)
+                print(f"[TUYA CMD ({clean_id} / switch_1+switch_2)]: value={cmd_value}, response={response}")
+                return bool(response and (response.get("success") is True or response.get("result") is True))
+            else:
+                # 'auto': Använd cachad kod om känd, annars testa enkel-switch först (1 anrop för de flesta pluggar)
+                cached_code = _DEVICE_DP_CACHE.get(clean_id)
+                if cached_code == "both":
+                    res_both = cloud.sendcommand(clean_id, {"commands": [{"code": "switch_1", "value": cmd_value}, {"code": "switch_2", "value": cmd_value}]})
+                    print(f"[TUYA CMD ({clean_id} / AUTO switch_1+switch_2)]: value={cmd_value}, response={res_both}")
+                    if res_both and (res_both.get("success") is True or res_both.get("result") is True):
+                        return True
+                elif cached_code:
+                    res_c = cloud.sendcommand(clean_id, {"commands": [{"code": cached_code, "value": cmd_value}]})
+                    print(f"[TUYA CMD ({clean_id} / {cached_code})]: value={cmd_value}, response={res_c}")
+                    if res_c and (res_c.get("success") is True or res_c.get("result") is True):
+                        return True
+
+                for code_name in ["switch", "switch_1", "switch_heat"]:
+                    response = cloud.sendcommand(clean_id, {"commands": [{"code": code_name, "value": cmd_value}]})
                     print(f"[TUYA CMD ({clean_id} / {code_name})]: value={cmd_value}, response={response}")
                     if response and (response.get("success") is True or response.get("result") is True):
+                        if code_name == "switch_1":
+                            res2 = cloud.sendcommand(clean_id, {"commands": [{"code": "switch_2", "value": cmd_value}]})
+                            if res2 and (res2.get("success") is True or res2.get("result") is True):
+                                _DEVICE_DP_CACHE[clean_id] = "both"
+                                return True
+                        _DEVICE_DP_CACHE[clean_id] = code_name
                         return True
-            else:
-                cmd_value = bool(value)
-                # Om användaren valt ett specifikt uttag (t.ex. Uttag 1 eller Uttag 2 på Deltaco SH-P02E)
-                if ch in ["switch_1", "switch_2"]:
-                    commands = {"commands": [{"code": ch, "value": cmd_value}]}
-                    response = cloud.sendcommand(clean_id, commands)
-                    print(f"[TUYA CMD ({clean_id} / {ch})]: value={cmd_value}, response={response}")
-                    if response and (response.get("success") is True or response.get("result") is True):
-                        return True
-                elif ch == "both":
-                    # Styr BÅDA uttagen samtidigt i ett gemensamt anrop (med fallback till separata anrop)
-                    commands = {"commands": [{"code": "switch_1", "value": cmd_value}, {"code": "switch_2", "value": cmd_value}]}
-                    response = cloud.sendcommand(clean_id, commands)
-                    print(f"[TUYA CMD ({clean_id} / switch_1+switch_2)]: value={cmd_value}, response={response}")
-                    if response and (response.get("success") is True or response.get("result") is True):
-                        return True
-                    ok1 = cloud.sendcommand(clean_id, {"commands": [{"code": "switch_1", "value": cmd_value}]})
-                    ok2 = cloud.sendcommand(clean_id, {"commands": [{"code": "switch_2", "value": cmd_value}]})
-                    if (ok1 and ok1.get("success")) or (ok2 and ok2.get("success")):
-                        return True
-                else:
-                    # 'auto': Testa först om enheten har både switch_1 och switch_2 (som Deltaco SH-P02E)
-                    # genom att försöka skicka batch-kommando till switch_1 + switch_2, annars vanlig switch -> switch_1
-                    both_cmd = {"commands": [{"code": "switch_1", "value": cmd_value}, {"code": "switch_2", "value": cmd_value}]}
-                    res_both = cloud.sendcommand(clean_id, both_cmd)
-                    if res_both and (res_both.get("success") is True or res_both.get("result") is True):
-                        print(f"[TUYA CMD ({clean_id} / AUTO switch_1+switch_2)]: value={cmd_value}, response={res_both}")
-                        return True
-
-                    for code_name in ["switch", "switch_1", "switch_heat"]:
-                        commands = {"commands": [{"code": code_name, "value": cmd_value}]}
-                        response = cloud.sendcommand(clean_id, commands)
-                        print(f"[TUYA CMD ({clean_id} / {code_name})]: value={cmd_value}, response={response}")
-                        if response and (response.get("success") is True or response.get("result") is True):
-                            return True
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} - [TUYA ERROR] Kunde inte skicka kommando till {clean_id}: {e}")
-    print(f"[ERROR] Tuya kommando misslyckades för enhet {clean_id} efter flera försök.")
+    except Exception as e:
+        print(f"[TUYA ERROR] Kunde inte skicka kommando till {clean_id}: {e}")
     return False
 
 def get_tuya_device_status(device_id: str, device_type: str = "switch", include_battery: bool = False, include_power: bool = False, switch_channel: str = "auto"):
     clean_id, ch = _parse_device_channel(device_id, switch_channel)
+    default_state = "OFF" if device_type == "switch" else "N/A"
     if not all([TUYA_API_KEY, TUYA_API_SECRET, clean_id]):
-        default_state = "OFF" if device_type == "switch" else "N/A"
         if include_battery and include_power:
             return False, default_state, None, None, None
         if include_battery:
@@ -661,145 +655,120 @@ def get_tuya_device_status(device_id: str, device_type: str = "switch", include_
         return False, default_state, None
 
     print(f"[TUYA STATUS] device_id={clean_id} (channel={ch}) type={device_type}")
-    for attempt in range(2):
-        try:
-            cloud = tinytuya.Cloud(
-                apiRegion=TUYA_REGION,
-                apiKey=TUYA_API_KEY,
-                apiSecret=TUYA_API_SECRET,
-                devId=clean_id
-            )
-            
-            # 1. Kontrollera om enheten faktiskt är ONLINE i Tuya Cloud (inte bara cachad status)
-            try:
-                dev_info = cloud.cloudrequest(f"/v1.0/devices/{clean_id}")
-                if isinstance(dev_info, dict) and dev_info.get("success") and isinstance(dev_info.get("result"), dict):
-                    is_online = dev_info["result"].get("online", True)
-                    if not is_online:
-                        print(f"[TUYA OFFLINE] Enhet {clean_id} rapporterar online=False i Tuya Cloud!")
-                        if include_battery and include_power:
-                            return False, "OFFLINE", None, None, None
-                        if include_battery:
-                            return False, "OFFLINE", None, None
-                        return False, "OFFLINE", None
-            except Exception as e_info:
-                print(f"[TUYA INFO WARN] Kunde inte verifiera online-flagga för {clean_id}: {e_info}")
+    try:
+        cloud = tinytuya.Cloud(
+            apiRegion=TUYA_REGION,
+            apiKey=TUYA_API_KEY,
+            apiSecret=TUYA_API_SECRET,
+            devId=clean_id
+        )
 
-            # 2. Hämta datapunkter (temperatur, switch-läge, batteri, effektmätning)
-            status_data = cloud.getstatus(clean_id)
-            print(f"[TUYA RAW RESPONSE] {clean_id}: {status_data}")
+        # Endast 1 enda API-anrop (getstatus) - inget extra cloudrequest innan!
+        status_data = cloud.getstatus(clean_id)
+        print(f"[TUYA RAW RESPONSE] {clean_id}: {status_data}")
 
-            if status_data and status_data.get("success"):
-                result = status_data.get("result", [])
-                current_state = "OFF" if device_type == "switch" else "N/A"
-                measured_temp = None
-                battery_level = None
-                power_w = None
+        if status_data and status_data.get("success"):
+            result = status_data.get("result", [])
+            current_state = default_state
+            measured_temp = None
+            battery_level = None
+            power_w = None
 
-                dp_map = {}
-                if isinstance(result, list):
-                    for item in result:
-                        c_name = str(item.get("code", "")).lower()
-                        c_val = item.get("value")
-                        dp_map[c_name] = c_val
-                        print(f"[TUYA DP] code={item.get('code')} value={c_val}")
+            dp_map = {}
+            if isinstance(result, list):
+                for item in result:
+                    c_name = str(item.get("code", "")).lower()
+                    c_val = item.get("value")
+                    dp_map[c_name] = c_val
 
-                    # Batterinivå
-                    for b_code in ["va_battery", "battery_percentage", "battery_value", "battery", "residual_electricity"]:
-                        if b_code in dp_map and dp_map[b_code] is not None:
-                            try:
-                                battery_level = int(float(dp_map[b_code]))
-                            except Exception:
-                                battery_level = str(dp_map[b_code])
-                            break
-                    if battery_level is None and "battery_state" in dp_map:
-                        state_map = {"high": "Hög (100%)", "middle": "Medel (50%)", "low": "Låg ⚠️ (10%)"}
-                        battery_level = state_map.get(str(dp_map["battery_state"]).lower(), str(dp_map["battery_state"]))
-
-                    # Effektmätning (t.ex. Deltaco SH-P02E: cur_power i 0.1W, cur_voltage i 0.1V, cur_current i mA)
-                    if "cur_power" in dp_map and dp_map["cur_power"] is not None:
+                # Batterinivå
+                for b_code in ["va_battery", "battery_percentage", "battery_value", "battery", "residual_electricity"]:
+                    if b_code in dp_map and dp_map[b_code] is not None:
                         try:
-                            raw_p = float(dp_map["cur_power"])
-                            # Om både spänning och ström rapporteras kan vi verifiera skalan (0.1W vs 1W) exakt
-                            raw_v = float(dp_map.get("cur_voltage", 0) or 0)
-                            raw_i = float(dp_map.get("cur_current", 0) or 0)
-                            v_volts = raw_v / 10.0 if raw_v > 500 else raw_v
-                            i_amps = raw_i / 1000.0 if raw_i > 0 else 0.0
-                            est_w = v_volts * i_amps
-                            if est_w > 5.0:
-                                power_w = round(raw_p / 10.0, 1) if abs((raw_p / 10.0) - est_w) < abs(raw_p - est_w) else round(raw_p, 1)
-                            else:
-                                # Tuya-standard för SH-P02E och smartpluggar med cur_power är 0.1W (deciwatt)
-                                power_w = round(raw_p / 10.0, 1)
+                            battery_level = int(float(dp_map[b_code]))
                         except Exception:
-                            pass
-                    elif "power" in dp_map or "active_power" in dp_map:
-                        try:
-                            power_w = round(float(dp_map.get("power") or dp_map.get("active_power")), 1)
-                        except Exception:
-                            pass
+                            battery_level = str(dp_map[b_code])
+                        break
+                if battery_level is None and "battery_state" in dp_map:
+                    state_map = {"high": "Hög (100%)", "middle": "Medel (50%)", "low": "Låg ⚠️ (10%)"}
+                    battery_level = state_map.get(str(dp_map["battery_state"]).lower(), str(dp_map["battery_state"]))
 
-                    # Temperatur / Termostat eller Switch-status
-                    # Temperatur / Termostat eller Switch-status
-                    if device_type == "thermostat":
-                        is_deci_scale = float(dp_map.get("maxtemp_set", 0) or 0) > 100
-                        for t_code in ["va_temperature", "temp_current", "temperature", "room_temp", "sensor_temp"]:
-                            if t_code in dp_map and dp_map[t_code] is not None:
-                                try:
-                                    v = float(dp_map[t_code])
-                                    if t_code == "va_temperature" or is_deci_scale or abs(v) > 50:
-                                        measured_temp = v / 10.0
-                                    else:
-                                        measured_temp = v
-                                except Exception:
-                                    pass
-                                break
-                        for s_code in dp_map:
-                            if "temp_set" in s_code or "target" in s_code:
-                                try:
-                                    v = float(dp_map[s_code])
-                                    current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
-                                except Exception:
-                                    current_state = str(dp_map[s_code])
-                                break
-                    else:
-                        # Hantera enkel- och dubbeluttag (switch, switch_1, switch_2)
-                        if ch == "switch_1" and "switch_1" in dp_map:
-                            current_state = "ON" if dp_map["switch_1"] else "OFF"
-                        elif ch == "switch_2" and "switch_2" in dp_map:
-                            current_state = "ON" if dp_map["switch_2"] else "OFF"
-                        elif "switch_1" in dp_map and "switch_2" in dp_map:
-                            s1 = bool(dp_map["switch_1"])
-                            s2 = bool(dp_map["switch_2"])
-                            if ch == "both":
-                                current_state = "ON" if (s1 or s2) else "OFF"
-                            else:
-                                current_state = "ON" if (s1 or s2) else "OFF"
-                        elif "switch" in dp_map:
-                            current_state = "ON" if dp_map["switch"] else "OFF"
-                        elif "switch_1" in dp_map:
-                            current_state = "ON" if dp_map["switch_1"] else "OFF"
+                # Effektmätning (t.ex. Deltaco SH-P02E: cur_power i 0.1W, cur_voltage i 0.1V, cur_current i mA)
+                if "cur_power" in dp_map and dp_map["cur_power"] is not None:
+                    try:
+                        raw_p = float(dp_map["cur_power"])
+                        raw_v = float(dp_map.get("cur_voltage", 0) or 0)
+                        raw_i = float(dp_map.get("cur_current", 0) or 0)
+                        v_volts = raw_v / 10.0 if raw_v > 500 else raw_v
+                        i_amps = raw_i / 1000.0 if raw_i > 0 else 0.0
+                        est_w = v_volts * i_amps
+                        if est_w > 5.0:
+                            power_w = round(raw_p / 10.0, 1) if abs((raw_p / 10.0) - est_w) < abs(raw_p - est_w) else round(raw_p, 1)
                         else:
-                            for k_code, k_val in dp_map.items():
-                                if "switch" in k_code:
-                                    current_state = "ON" if k_val else "OFF"
-                                    break
+                            power_w = round(raw_p / 10.0, 1)
+                    except Exception:
+                        pass
+                elif "power" in dp_map or "active_power" in dp_map:
+                    try:
+                        power_w = round(float(dp_map.get("power") or dp_map.get("active_power")), 1)
+                    except Exception:
+                        pass
 
-                if include_battery and include_power:
-                    return True, current_state, measured_temp, battery_level, power_w
-                if include_battery:
-                    return True, current_state, measured_temp, battery_level
-                return True, current_state, measured_temp
+                # Temperatur / Termostat eller Switch-status
+                if device_type == "thermostat":
+                    is_deci_scale = float(dp_map.get("maxtemp_set", 0) or 0) > 100
+                    for t_code in ["va_temperature", "temp_current", "temperature", "room_temp", "sensor_temp"]:
+                        if t_code in dp_map and dp_map[t_code] is not None:
+                            try:
+                                v = float(dp_map[t_code])
+                                if t_code == "va_temperature" or is_deci_scale or abs(v) > 50:
+                                    measured_temp = v / 10.0
+                                else:
+                                    measured_temp = v
+                            except Exception:
+                                pass
+                            break
+                    for s_code in dp_map:
+                        if "temp_set" in s_code or "target" in s_code:
+                            try:
+                                v = float(dp_map[s_code])
+                                current_state = f"{v / 10.0 if v > 50 else v:.1f}°C"
+                            except Exception:
+                                current_state = str(dp_map[s_code])
+                            break
+                else:
+                    if ch == "switch_1" and "switch_1" in dp_map:
+                        current_state = "ON" if dp_map["switch_1"] else "OFF"
+                    elif ch == "switch_2" and "switch_2" in dp_map:
+                        current_state = "ON" if dp_map["switch_2"] else "OFF"
+                    elif "switch_1" in dp_map and "switch_2" in dp_map:
+                        s1 = bool(dp_map["switch_1"])
+                        s2 = bool(dp_map["switch_2"])
+                        current_state = "ON" if (s1 or s2) else "OFF"
+                    elif "switch" in dp_map:
+                        current_state = "ON" if dp_map["switch"] else "OFF"
+                    elif "switch_1" in dp_map:
+                        current_state = "ON" if dp_map["switch_1"] else "OFF"
+                    else:
+                        for k_code, k_val in dp_map.items():
+                            if "switch" in k_code:
+                                current_state = "ON" if k_val else "OFF"
+                                break
 
-        except Exception as e:
-            print(f"[WARNING] Försök {attempt+1} - [TUYA STATUS ERROR ({clean_id})]: {e}")
+            if include_battery and include_power:
+                return True, current_state, measured_temp, battery_level, power_w
+            if include_battery:
+                return True, current_state, measured_temp, battery_level
+            return True, current_state, measured_temp
+
+    except Exception as e:
+        print(f"[TUYA STATUS ERROR ({clean_id})]: {e}")
     
-    default_state = "OFF" if device_type == "switch" else "N/A"
     if include_battery and include_power:
-        return False, default_state, None, None, None
+        return False, "OFFLINE", None, None, None
     if include_battery:
-        return False, default_state, None, None
-    return False, default_state, None
+        return False, "OFFLINE", None, None
+    return False, "OFFLINE", None
 
 # --- PULP OPTIMERINGSMOTOR MED LOKAL TOPPKAPNING ---
 def generate_daily_schedule(
@@ -960,6 +929,8 @@ def main():
                 pass
 
         quarter_index = (now.hour * 4) + (now.minute // 15)
+        # Cache inom denna körning så att samma termometer aldrig läses 2 gånger samma kvart
+        run_sensor_cache = {}
        
         if "houses" not in config:
             config = {
@@ -1227,7 +1198,11 @@ def main():
                     ]
 
                     if thermo_id:
-                        thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat")
+                        if thermo_id in run_sensor_cache:
+                            thermo_active, _, measured_room_temp = run_sensor_cache[thermo_id]
+                        else:
+                            thermo_active, _, measured_room_temp = get_tuya_device_status(thermo_id, device_type="thermostat")
+                            run_sensor_cache[thermo_id] = (thermo_active, "", measured_room_temp)
                         
                         # Uppdaterad säkerhetsvakt: Fångar BÅDE givare som låst sig lågt (tvingar PÅ) 
                         # OCH givare som låst sig högt (tvingar AV trots kyla ute) i > 4 timmar (16 kvartar)
@@ -1261,22 +1236,28 @@ def main():
                                 is_active = (current_price <= dev_price_cap)
                                 target_temp_val = t_high if is_active else t_low
                                 reason = f"[{dev_name}] Reservregel: Pris ({current_price:.1f} öre) vs pristak ({dev_price_cap:.1f} öre)"
-                                # Köldskydd endast om giltigt PuLP-schema saknas
                                 if current_temp <= cold_threshold and min_mins_cold > 0 and now.minute < min_mins_cold:
                                     target_temp_val = t_high
                                     reason = f"[{dev_name}] Köldskydd aktivt (Reservläge) -> HÖG temp ({t_high}°C)"
 
-                        cmd_ok = set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
-                        time.sleep(2)
+                        desired_status = f"{target_temp_val}°C"
+                        last_dev_status = dev_hist[-1].get("status") if dev_hist else None
+                        last_dev_temp = dev_hist[-1].get("room_temp") if dev_hist else None
 
-                        connected, _, measured_dev_temp = get_tuya_device_status(dev_id, device_type="thermostat", include_battery=False)
-                        final_room_temp = measured_dev_temp if measured_dev_temp is not None else measured_room_temp
-
-                        if not cmd_ok or not connected:
-                            final_status = "OFFLINE"
-                            reason += f" [❌ Termostat OFFLINE - målvärde ({target_temp_val}°C) nådde inte fram!]"
+                        # Skicka BARA kommando till Tuya om måltemperaturen ändras eller vid hel timme
+                        needs_tuya_cmd = (last_dev_status != desired_status) or (now.minute < 15)
+                        if needs_tuya_cmd:
+                            cmd_ok = set_tuya_device(dev_id, target_temp_val, device_type="thermostat")
+                            if not cmd_ok:
+                                final_status = "OFFLINE"
+                                reason += f" [❌ Termostat OFFLINE - målvärde ({target_temp_val}°C) nådde inte fram!]"
+                            else:
+                                final_status = desired_status
+                            final_room_temp = measured_room_temp if measured_room_temp is not None else last_dev_temp
                         else:
-                            final_status = f"{target_temp_val}°C"
+                            final_status = desired_status
+                            final_room_temp = measured_room_temp if measured_room_temp is not None else last_dev_temp
+                            reason += " (Oförändrat läge - inget Tuya-anrop)"
 
                         log_entry = {
                             "timestamp": now.strftime("%Y-%m-%d %H:%M"),
@@ -1292,8 +1273,12 @@ def main():
                         history.append(log_entry)
                     
                     elif dev_type == "sensor":
-                        # Fristående temperaturgivare (ingen styrning, enbart mätning & loggning)
-                        sensor_conn, _, sensor_temp = get_tuya_device_status(dev_id, device_type="thermostat")
+                        # Fristående temperaturgivare (1 anrop per kvart, återanvänds via run_sensor_cache)
+                        if dev_id in run_sensor_cache:
+                            sensor_conn, _, sensor_temp = run_sensor_cache[dev_id]
+                        else:
+                            sensor_conn, _, sensor_temp = get_tuya_device_status(dev_id, device_type="thermostat")
+                            run_sensor_cache[dev_id] = (sensor_conn, "", sensor_temp)
 
                         if not sensor_conn:
                             final_status = "OFFLINE"
@@ -1356,26 +1341,40 @@ def main():
                                     should_be_on = True
                                     reason = f"[{dev_name}] Köldskydd aktivt (Reservläge utan schema, {current_temp}°C <= {cold_threshold}°C)"
 
-                        cmd_ok = set_tuya_device(dev_id, should_be_on, device_type="switch", switch_channel=dev_channel)
-                        time.sleep(2)
-
-                        # Läs även av aktuell effekt (W) om switchen har effektmätning (t.ex. Deltaco SH-P02E)
-                        _, _, _, _, measured_power_w = get_tuya_device_status(
-                            dev_id,
-                            device_type="switch",
-                            include_battery=True,
-                            include_power=True,
-                            switch_channel=dev_channel
-                        )
-
+                        desired_status = "ON" if should_be_on else "OFF"
+                        last_dev_status = dev_hist[-1].get("status") if dev_hist else None
+                        last_dev_power = dev_hist[-1].get("power_w") if dev_hist else None
                         intended_str = "PÅ" if should_be_on else "AV"
-                        if not cmd_ok:
-                            final_status = "OFFLINE"
-                            reason += f" [❌ Switch OFFLINE - kommandot ({intended_str}) nådde inte fram!]"
+
+                        # Skicka BARA kommando till Tuya om statusen faktiskt ändras (eller 1 gång/timme vid hel timme)
+                        needs_tuya_cmd = (last_dev_status != desired_status) or (now.minute < 15)
+
+                        if needs_tuya_cmd:
+                            cmd_ok = set_tuya_device(dev_id, should_be_on, device_type="switch", switch_channel=dev_channel)
+                            measured_power_w = None
+
+                            if not cmd_ok:
+                                final_status = "OFFLINE"
+                                reason += f" [❌ Switch OFFLINE - kommandot ({intended_str}) nådde inte fram!]"
+                            else:
+                                final_status = desired_status
+                                # Läs bara av effektmätning om enheten är PÅ och är en effektmätande plugg (t.ex. Deltaco SH-P02E)
+                                if should_be_on and (dev_channel in ["both", "switch_1", "switch_2"] or last_dev_power is not None):
+                                    time.sleep(2)
+                                    _, _, _, _, measured_power_w = get_tuya_device_status(
+                                        dev_id,
+                                        device_type="switch",
+                                        include_battery=True,
+                                        include_power=True,
+                                        switch_channel=dev_channel
+                                    )
+                                    if measured_power_w is not None:
+                                        reason += f" [⚡ {measured_power_w:.1f} W]"
                         else:
-                            final_status = "ON" if should_be_on else "OFF"
-                            if measured_power_w is not None:
-                                reason += f" [⚡ {measured_power_w:.1f} W]"
+                            # Ingen ändring behövs -> 0 Tuya-anrop för denna switch denna kvart!
+                            final_status = desired_status
+                            measured_power_w = last_dev_power if should_be_on else (0.0 if last_dev_power is not None else None)
+                            reason += " (Oförändrat läge - inget Tuya-anrop)"
 
                         log_entry = {
                             "timestamp": now.strftime("%Y-%m-%d %H:%M"),

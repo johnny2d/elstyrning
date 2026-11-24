@@ -77,6 +77,8 @@ if "houses" not in config:
     config["houses"] = {}
 if "admin_password" not in config:
     config["admin_password"] = st.secrets.get("APP_PASSWORD", "admin123")
+if "live_tuya_cache" not in st.session_state:
+    st.session_state["live_tuya_cache"] = {}
 
 # --- AUTHENTICATION & SESSION ---
 if "authenticated" not in st.session_state:
@@ -287,14 +289,26 @@ else:
     tab_dash, tab_settings, tab_sched = st.tabs(["🏠 Dashboard", "⚙️ Enhetsinställningar", "📅 Schema & Priser"])
     tab_admin = None
 
-# --- CACHADE HJÄLPFUNKTIONER FÖR SNABB SIDLADDNING ---
+# --- CACHADE HJÄLPFUNKTIONER FÖR SNABB SIDLADDNING (0 TUYA-ANROP VID SIDLADDNING) ---
 @st.cache_data(ttl=3600)
 def cached_nordpool_price(zone: str, date_str: str):
     dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=sweden_tz)
     return get_nordpool_price(zone=zone, target_date=dt)
 
-@st.cache_data(ttl=30)
-def safe_tuya_status(d_id, d_type, switch_channel="auto"):
+def get_status_from_history(house_name, dev_name, d_type, history_list):
+    """Läser senast loggade status, temperatur och effekt från Gist-historiken (0 Tuya-anrop)."""
+    for item in reversed(history_list or []):
+        if item.get("house") == house_name and item.get("device") == dev_name:
+            st_val = item.get("status", "OFF" if d_type == "switch" else "N/A")
+            is_online = (st_val != "OFFLINE")
+            temp_val = item.get("room_temp") if item.get("room_temp") is not None else item.get("device_temp")
+            power_val = item.get("power_w")
+            ts_val = item.get("timestamp", "")
+            return is_online, st_val, temp_val, None, power_val, ts_val
+    return True, ("OFF" if d_type == "switch" else "N/A"), None, None, None, ""
+
+def fetch_live_tuya_status(d_id, d_type, switch_channel="auto"):
+    """Anropas ENDAST när användaren manuellt klickar på 'Läs live-status från Tuya'."""
     if not d_id:
         return False, "Ej konfigurerad", None, None, None
     query_type = "thermostat" if d_type in ["thermostat", "sensor"] else "switch"
@@ -463,20 +477,23 @@ def render_el_chart(times_ext, prices_ext, temp_ext, schedule_data, is_thermosta
 
 # --- TAB 1: DASHBOARD ---
 with tab_dash:
+    live_cache = st.session_state.get("live_tuya_cache", {})
     offline_devices = []
     if current_house:
+        h_name_curr = current_house.get("name")
         for dev in current_house.get("devices", []):
-            if dev.get("device_id"):
-                tuya_conn, _, _, _, _ = safe_tuya_status(
-                    dev.get("device_id"),
-                    dev.get("type", "switch"),
-                    dev.get("switch_channel", "auto")
-                )
+            d_id = dev.get("device_id")
+            if d_id:
+                cache_key = f"{selected_house_key}_{dev.get('id', dev.get('name'))}"
+                if cache_key in live_cache:
+                    tuya_conn = live_cache[cache_key]["conn"]
+                else:
+                    tuya_conn, _, _, _, _, _ = get_status_from_history(h_name_curr, dev.get("name"), dev.get("type", "switch"), history)
                 if not tuya_conn:
                     offline_devices.append(dev.get("name"))
 
     if offline_devices:
-        st.error(f"⚠️ **Varning:** Ingen kontakt med följande Tuya-enhet(er): **{', '.join(offline_devices)}**. Kontrollera nätverk eller strömförsörjning!")
+        st.error(f"⚠️ **Varning:** Senaste körningen tappade kontakt med följande Tuya-enhet(er): **{', '.join(offline_devices)}**. Kontrollera nätverk eller strömförsörjning!")
 
     st.subheader("📍 Realtidsöversikt & Ekonomi")
     
@@ -561,25 +578,60 @@ with tab_dash:
         render_el_chart(times_ext, prices_ext, temp_ext, schedule_today, is_therm, current_device, "chart_dashboard", history_df=device_history_df)
 
     st.divider()
-    st.markdown("### 🎛️ Husets Enheter")
+    hdr_col1, hdr_col2 = st.columns([3, 1])
+    with hdr_col1:
+        st.markdown("### 🎛️ Husets Enheter")
+        st.caption("Visar senast loggad status från bakgrundskörningen (0 Tuya-anrop vid sidladdning).")
+    with hdr_col2:
+        if current_house and st.button("🔄 Läs live från Tuya", key="btn_live_tuya_refresh"):
+            with st.spinner("Hämtar live-status från Tuya Cloud..."):
+                for dev in current_house.get("devices", []):
+                    d_id = dev.get("device_id")
+                    d_type = dev.get("type", "switch")
+                    d_ch = dev.get("switch_channel", "auto")
+                    c_key = f"{selected_house_key}_{dev.get('id', dev.get('name'))}"
+                    conn, msg, d_temp, d_batt, d_pow = fetch_live_tuya_status(d_id, d_type, d_ch)
+                    t_id = dev.get("thermometer_device_id")
+                    t_conn, t_temp, t_batt = False, None, None
+                    if t_id:
+                        t_conn, _, t_temp, t_batt, _ = fetch_live_tuya_status(t_id, "thermostat")
+                    st.session_state["live_tuya_cache"][c_key] = {
+                        "conn": conn, "msg": msg, "temp": d_temp, "batt": d_batt, "power": d_pow,
+                        "t_conn": t_conn, "t_temp": t_temp, "t_batt": t_batt,
+                        "ts": datetime.now(sweden_tz).strftime("%H:%M:%S (live)")
+                    }
+            st.rerun()
     
     if current_house:
         devs = current_house.get("devices", [])
+        h_name_curr = current_house.get("name")
         if devs:
             dev_cols = st.columns(len(devs) if len(devs) <= 3 else 3)
             for idx, dev in enumerate(devs):
                 dev_ch = dev.get("switch_channel", "auto")
-                tuya_conn, tuya_msg, dev_temp, dev_batt, dev_power = safe_tuya_status(
-                    dev.get("device_id"), 
-                    dev.get("type", "switch"),
-                    dev_ch
-                )
-
+                d_type = dev.get("type", "switch")
                 thermo_id = dev.get("thermometer_device_id")
-                thermo_conn, _, room_temp, thermo_batt, _ = safe_tuya_status(
-                    thermo_id, 
-                    "thermostat"
-                ) if thermo_id else (False, "", None, None, None)
+                c_key = f"{selected_house_key}_{dev.get('id', dev.get('name'))}"
+
+                if c_key in st.session_state["live_tuya_cache"]:
+                    cached = st.session_state["live_tuya_cache"][c_key]
+                    tuya_conn = cached["conn"]
+                    tuya_msg = cached["msg"]
+                    dev_temp = cached["temp"]
+                    dev_batt = cached["batt"]
+                    dev_power = cached["power"]
+                    thermo_conn = cached["t_conn"]
+                    room_temp = cached["t_temp"]
+                    thermo_batt = cached["t_batt"]
+                    last_seen_ts = cached["ts"]
+                else:
+                    tuya_conn, tuya_msg, hist_temp, dev_batt, dev_power, last_seen_ts = get_status_from_history(
+                        h_name_curr, dev.get("name"), d_type, history
+                    )
+                    dev_temp = hist_temp if d_type in ["thermostat", "sensor"] else None
+                    room_temp = hist_temp if thermo_id else None
+                    thermo_conn = (room_temp is not None)
+                    thermo_batt = None
 
                 # Hjälpfunktion för att formatera batteritext med ikon
                 def format_battery(batt_val):
@@ -612,12 +664,12 @@ with tab_dash:
                         st.markdown("<br>", unsafe_allow_html=True)
                     else:
                         with st.container(border=True):
-                            st.markdown(f"#### {'🌡️' if dev.get('type') == 'sensor' else '🔌'} {dev.get('name')}")
-                            d_type = dev.get("type", "switch")
+                            st.markdown(f"#### {'🌡️' if d_type == 'sensor' else '🔌'} {dev.get('name')}")
                             type_label = "Termostat" if d_type == "thermostat" else ("Fristående termometer" if d_type == "sensor" else "Relä / Switch")
                             if d_type == "switch" and dev_ch in ["both", "switch_1", "switch_2"]:
                                 type_label += f" ({ch_labels.get(dev_ch, dev_ch)})"
-                            st.caption(f"Typ: {type_label}")
+                            ts_suffix = f" | Uppdaterad: {last_seen_ts}" if last_seen_ts else ""
+                            st.caption(f"Typ: {type_label}{ts_suffix}")
 
                             if d_type == "sensor":
                                 if dev_temp is not None:
@@ -640,7 +692,7 @@ with tab_dash:
                                     elif thermo_conn:
                                         st.markdown(f"🌡️ **Rumstemp:** `Ansluten men ingen temperatur hittades ⚠️`{format_battery(thermo_batt)}")
                                     else:
-                                        st.markdown("🌡️ **Rumstemp:** `OFFLINE ⚠️`")
+                                        st.markdown("🌡️ **Rumstemp:** `Ingen mätning ännu`")
                                 else:
                                     st.markdown(f"**Måltemp:** `{dev.get('target_room_temp', 20.0)} °C`")
 
@@ -716,16 +768,17 @@ with tab_settings:
                 dev_id = current_device.get("device_id")
                 if dev_id:
                     if is_thermostat:
-                        target_val = t_high if force == "PÅ (Tvinga igång)" else (t_low if force == "AV (Stäng av allt)" else t_low)
-                        set_tuya_device(dev_id, target_val, device_type="thermostat")
-                    else:
-                        switch_val = True if force == "PÅ (Tvinga igång)" else (False if force == "AV (Stäng av allt)" else False)
                         if force != "AUTO":
+                            target_val = t_high if force == "PÅ (Tvinga igång)" else t_low
+                            set_tuya_device(dev_id, target_val, device_type="thermostat")
+                    else:
+                        if force != "AUTO":
+                            switch_val = True if force == "PÅ (Tvinga igång)" else False
                             set_tuya_device(dev_id, switch_val, device_type="switch", switch_channel=selected_channel)
 
                 load_gist_data.clear()
-                safe_tuya_status.clear()
-                st.success("Inställningarna sparades och skickades till enheten!")
+                st.session_state["live_tuya_cache"] = {}
+                st.success("Inställningarna sparades!")
                 time.sleep(1)
                 st.rerun()
 
